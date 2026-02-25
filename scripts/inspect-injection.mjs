@@ -42,6 +42,8 @@ class InspectionApi {
 
 	registerCommand() {}
 
+	registerShortcut() {}
+
 	getFlag() {
 		return undefined;
 	}
