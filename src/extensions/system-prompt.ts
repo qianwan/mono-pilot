@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ToolInfo } from "@mariozechner/pi-coding-agent";
+import { formatSkillsForPrompt, loadSkills, type ExtensionAPI, type ToolInfo } from "@mariozechner/pi-coding-agent";
 
 const NO_DESCRIPTION_PLACEHOLDER = "No short description provided.";
 const PROJECT_CONTEXT_HEADER = "# Project Context";
@@ -16,6 +16,7 @@ const CURRENT_WORKING_DIRECTORY_TOKEN = "{{CURRENT_WORKING_DIRECTORY}}";
 const PI_README_PATH_TOKEN = "{{PI_README_PATH}}";
 const PI_DOCS_PATH_TOKEN = "{{PI_DOCS_PATH}}";
 const PI_EXAMPLES_PATH_TOKEN = "{{PI_EXAMPLES_PATH}}";
+const SKILLS_BLOCK_TOKEN = "{{SKILLS_BLOCK}}";
 
 const UNIFIED_SYSTEM_PROMPT_TEMPLATE = `You are an expert coding assistant operating inside MonoPilot (a pi-coding-agent compatibility harness) on a user's computer.
 You help users by reading files, executing commands, editing code, and writing new files.
@@ -170,7 +171,8 @@ Your main goal is to follow the USER's instructions at each message, denoted by 
 <runtime_context>
 Current date and time: ${CURRENT_DATETIME_TOKEN}
 Current working directory: ${CURRENT_WORKING_DIRECTORY_TOKEN}
-</runtime_context>`;
+</runtime_context>
+${SKILLS_BLOCK_TOKEN}`;
 
 function getFirstDescriptionLine(description: string | undefined): string {
 	if (!description) return NO_DESCRIPTION_PLACEHOLDER;
@@ -232,6 +234,7 @@ function renderTemplate(
 		piReadmePath: string;
 		piDocsPath: string;
 		piExamplesPath: string;
+		skillsBlock: string;
 	},
 ): string {
 	return template
@@ -248,7 +251,9 @@ function renderTemplate(
 		.split(PI_DOCS_PATH_TOKEN)
 		.join(values.piDocsPath)
 		.split(PI_EXAMPLES_PATH_TOKEN)
-		.join(values.piExamplesPath);
+		.join(values.piExamplesPath)
+		.split(SKILLS_BLOCK_TOKEN)
+		.join(values.skillsBlock);
 }
 
 function getFallbackDateTimeText(): string {
@@ -319,6 +324,11 @@ export default function systemPromptExtension(pi: ExtensionAPI) {
 		const cwd =
 			extractValueAfterPrefix(event.systemPrompt, CURRENT_WORKING_DIRECTORY_PREFIX) ?? process.cwd();
 
+		// Load skills directly since pi-mono skips injection when "read" tool
+		// is not in the base tool set (mono-pilot uses "ReadFile" instead).
+		const { skills } = loadSkills({ cwd });
+		const skillsBlock = formatSkillsForPrompt(skills);
+
 		const unifiedPrompt = renderTemplate(UNIFIED_SYSTEM_PROMPT_TEMPLATE, {
 			tools,
 			projectContext,
@@ -327,6 +337,7 @@ export default function systemPromptExtension(pi: ExtensionAPI) {
 			piReadmePath: piDocsPaths.readmePath,
 			piDocsPath: piDocsPaths.docsPath,
 			piExamplesPath: piDocsPaths.examplesPath,
+			skillsBlock,
 		});
 
 		if (unifiedPrompt === event.systemPrompt) {
