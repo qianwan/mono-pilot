@@ -17,6 +17,7 @@ import switchModeExtension from "../../tools/switch-mode.js";
 import applyPatchExtension from "../../tools/apply-patch.js";
 import userMessageExtension from "./user-message.js";
 import systemPromptExtension from "./system-prompt.js";
+import sessionHintsExtension from "./session-hints.js";
 
 const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
@@ -37,6 +38,7 @@ const toolExtensions: ExtensionFactory[] = [
 	applyPatchExtension,
 	userMessageExtension,
 	systemPromptExtension,
+	sessionHintsExtension,
 ];
 
 export default function monoPilotExtension(pi: ExtensionAPI) {

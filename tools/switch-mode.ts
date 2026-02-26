@@ -4,14 +4,12 @@ import { type Static, Type } from "@sinclair/typebox";
 import {
 	createModeStateData,
 	deriveInitialModeState,
-	hasMessageEntries,
 	modeRuntimeStore,
 	MODE_STATE_ENTRY_TYPE,
 	parseModeStateEntry,
 	type ModeId,
 } from "../src/extensions/mode-runtime.js";
 
-const MODE_HINT_MESSAGE_TYPE = "Hints";
 const MODE_STATUS_KEY = "mono-pilot-mode";
 
 const DESCRIPTION = `Switch the interaction mode to better match the current task. Each mode is optimized for a specific type of work.
@@ -386,17 +384,6 @@ export default function switchModeExtension(pi: ExtensionAPI) {
 
 		installModeFooter(ctx);
 		updateModeStatus(ctx);
-
-		if (ctx.hasUI && !hasMessageEntries(entries)) {
-			pi.sendMessage(
-				{
-					customType: MODE_HINT_MESSAGE_TYPE,
-					content: "Mode switch: use `option+m` to toggle Plan/Ask/Agent mode.",
-					display: true,
-				},
-				{ triggerTurn: false },
-			);
-		}
 	});
 
 	// System prompt injection is handled centrally by system-prompt extension.
