@@ -188,37 +188,52 @@ async function buildMcpInstructionsEnvelope(workspaceCwd: string): Promise<strin
 
 async function buildRulesEnvelope(workspaceCwd: string): Promise<string | undefined> {
 	const rulesDirPath = resolve(workspaceCwd, RULES_RELATIVE_DIR);
-	if (!existsSync(rulesDirPath)) return undefined;
+	const userRulesDirPath = resolve(homedir(), RULES_RELATIVE_DIR);
 
-	let directoryEntries: Dirent<string>[];
-	try {
-		directoryEntries = await readdir(rulesDirPath, { withFileTypes: true, encoding: "utf8" });
-	} catch {
-		return undefined;
-	}
+	const loadRulesFromDir = async (dirPath: string): Promise<Map<string, string>> => {
+		if (!existsSync(dirPath)) return new Map();
 
-	const ruleFileNames = directoryEntries
-		.filter((entry) => entry.isFile() && entry.name.endsWith(".rule.txt"))
-		.map((entry) => entry.name)
-		.sort((a, b) => a.localeCompare(b));
-
-	if (ruleFileNames.length === 0) return undefined;
-
-	const rules: string[] = [];
-	for (const ruleFileName of ruleFileNames) {
-		const ruleFilePath = resolve(rulesDirPath, ruleFileName);
+		let directoryEntries: Dirent<string>[];
 		try {
-			const content = await readFile(ruleFilePath, "utf-8");
-			const normalized = content.trim();
-			if (normalized.length > 0) {
-				rules.push(normalized);
-			}
+			directoryEntries = await readdir(dirPath, { withFileTypes: true, encoding: "utf8" });
 		} catch {
-			// Ignore unreadable rule files.
+			return new Map();
 		}
+
+		const ruleFileNames = directoryEntries
+			.filter((entry) => entry.isFile() && entry.name.endsWith(".rule.txt"))
+			.map((entry) => entry.name)
+			.sort((a, b) => a.localeCompare(b));
+
+		const rules = new Map<string, string>();
+		for (const ruleFileName of ruleFileNames) {
+			const ruleFilePath = resolve(dirPath, ruleFileName);
+			try {
+				const content = await readFile(ruleFilePath, "utf-8");
+				const normalized = content.trim();
+				if (normalized.length > 0) {
+					rules.set(ruleFileName, normalized);
+				}
+			} catch {
+				// Ignore unreadable rule files.
+			}
+		}
+
+		return rules;
+	};
+
+	const userRules = await loadRulesFromDir(userRulesDirPath);
+	const workspaceRules = await loadRulesFromDir(rulesDirPath);
+	const mergedRules = new Map(userRules);
+	for (const [fileName, content] of workspaceRules) {
+		mergedRules.set(fileName, content);
 	}
 
-	if (rules.length === 0) return undefined;
+	if (mergedRules.size === 0) return undefined;
+
+	const rules = Array.from(mergedRules.entries())
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([, content]) => content);
 
 	const lines: string[] = ["<rules>"];
 	for (const rule of rules) {
