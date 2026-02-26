@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -10,24 +8,9 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import {
-	createRpcRequestId,
-	extractStringHeaders,
-	formatErrorMessage,
-	formatJsonRpcError,
-	getHeaderKeys,
-	inferTransport,
-	isRecord,
-	isServerEnabled,
-	MCP_CONFIG_RELATIVE_PATH,
-	parseMcpConfig,
-	postJsonRpcRequest,
-	resolveMcpConfigPath,
-	toBoolean,
-	toNonEmptyString,
-	initializeMcpSession,
-	type RawMcpServerConfig,
-} from "../src/utils/mcp-client.js";
+import { McpServerError, resolveTargetServer, type TargetServer } from "../src/mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
+import { formatErrorMessage, getHeaderKeys, isRecord, toBoolean, toNonEmptyString } from "../src/mcp/config.js";
 
 const DESCRIPTION = `Call an MCP tool by server identifier and tool name with arbitrary JSON arguments. IMPORTANT: Always read the tool's schema/descriptor BEFORE calling to ensure correct parameters.
 
@@ -51,7 +34,7 @@ const callMcpToolSchema = Type.Object({
 type CallMcpToolInput = Static<typeof callMcpToolSchema>;
 
 interface CallMcpToolDetails {
-	config_path?: string;
+	config_paths?: string[];
 	server: string;
 	tool_name: string;
 	transport?: "remote" | "stdio" | "unknown";
@@ -102,10 +85,7 @@ async function callRemoteMcpTool(options: {
 		throw new Error("MCP tools/call returned no result.");
 	}
 
-	return {
-		result: callBody.result,
-		sessionId,
-	};
+	return { result: callBody.result, sessionId };
 }
 
 function normalizeServerName(value: string): string {
@@ -215,21 +195,13 @@ function formatToolCallResultOutput(server: string, toolName: string, result: un
 		lines.push("```");
 	}
 
-	return {
-		text: lines.join("\n"),
-		contentItems,
-		isError,
-		hasStructuredContent,
-	};
+	return { text: lines.join("\n"), contentItems, isError, hasStructuredContent };
 }
 
 function getCollapsedResultText(text: string, expanded: boolean): { output: string; remaining: number } {
-	if (text.length === 0) {
-		return { output: text, remaining: 0 };
-	}
+	if (text.length === 0) return { output: text, remaining: 0 };
 
 	const lines = text.split("\n");
-	// Use 20 lines as the standard collapse threshold
 	const MAX_COLLAPSED_RESULT_LINES = 20;
 
 	if (expanded || lines.length <= MAX_COLLAPSED_RESULT_LINES) {
@@ -300,79 +272,21 @@ export default function callMcpToolExtension(pi: ExtensionAPI) {
 				};
 			}
 
-			const configPath = resolveMcpConfigPath(ctx.cwd);
-			if (!configPath) {
-				const workspaceCandidate = resolve(ctx.cwd, MCP_CONFIG_RELATIVE_PATH);
-				const homeCandidate = resolve(homedir(), MCP_CONFIG_RELATIVE_PATH);
-				const message = `MCP config not found. Checked:\n- ${workspaceCandidate}\n- ${homeCandidate}`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						server: serverName,
-						tool_name: toolName,
-						error: message,
-					} satisfies CallMcpToolDetails,
-					isError: true,
-				};
-			}
+			let server: TargetServer;
+			let configPaths: string[];
 
-			let servers: Record<string, RawMcpServerConfig>;
 			try {
-				servers = await parseMcpConfig(configPath);
+				const result = await resolveTargetServer(ctx.cwd, serverName);
+				server = result.server;
+				configPaths = result.configPaths;
 			} catch (error) {
 				const message = formatErrorMessage(error);
+				const transport = error instanceof McpServerError ? error.transport : undefined;
+				const paths = error instanceof McpServerError ? error.configPaths : undefined;
 				return {
 					content: [{ type: "text", text: message }],
 					details: {
-						config_path: configPath,
-						server: serverName,
-						tool_name: toolName,
-						error: message,
-					} satisfies CallMcpToolDetails,
-					isError: true,
-				};
-			}
-
-			const serverConfig = servers[serverName];
-			if (!serverConfig) {
-				const message = `MCP server '${serverName}' not found in ${configPath}.`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						server: serverName,
-						tool_name: toolName,
-						error: message,
-					} satisfies CallMcpToolDetails,
-					isError: true,
-				};
-			}
-
-			if (!isServerEnabled(serverConfig)) {
-				const message = `MCP server '${serverName}' is disabled in config.`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						server: serverName,
-						tool_name: toolName,
-						transport: inferTransport(serverConfig),
-						error: message,
-					} satisfies CallMcpToolDetails,
-					isError: true,
-				};
-			}
-
-			const transport = inferTransport(serverConfig);
-			if (transport === "stdio") {
-				const command = toNonEmptyString(serverConfig.command);
-				const message =
-					`MCP stdio transport is not supported yet in CallMcpTool.` +
-					(command ? ` Configured command: ${command}` : "");
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
+						config_paths: paths,
 						server: serverName,
 						tool_name: toolName,
 						transport,
@@ -381,29 +295,11 @@ export default function callMcpToolExtension(pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-
-			const serverUrl = toNonEmptyString(serverConfig.url);
-			if (!serverUrl) {
-				const message = `MCP server '${serverName}' is missing a remote URL.`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						server: serverName,
-						tool_name: toolName,
-						transport,
-						error: message,
-					} satisfies CallMcpToolDetails,
-					isError: true,
-				};
-			}
-
-			const headers = extractStringHeaders(serverConfig.headers);
 
 			try {
 				const remoteResult = await callRemoteMcpTool({
-					serverUrl,
-					serverHeaders: headers,
+					serverUrl: server.url,
+					serverHeaders: server.headers,
 					toolName,
 					argumentsValue,
 					signal,
@@ -424,12 +320,12 @@ export default function callMcpToolExtension(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: output }],
 					details: {
-						config_path: configPath,
+						config_paths: configPaths,
 						server: serverName,
 						tool_name: toolName,
-						transport,
-						server_url: serverUrl,
-						header_keys: getHeaderKeys(headers),
+						transport: "remote",
+						server_url: server.url,
+						header_keys: getHeaderKeys(server.headers),
 						session_id: remoteResult.sessionId,
 						content_items: formatted.contentItems,
 						is_error: formatted.isError,
@@ -443,12 +339,12 @@ export default function callMcpToolExtension(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: `CallMcpTool failed: ${message}` }],
 					details: {
-						config_path: configPath,
+						config_paths: configPaths,
 						server: serverName,
 						tool_name: toolName,
-						transport,
-						server_url: serverUrl,
-						header_keys: getHeaderKeys(headers),
+						transport: "remote",
+						server_url: server.url,
+						header_keys: getHeaderKeys(server.headers),
 						error: message,
 					} satisfies CallMcpToolDetails,
 					isError: true,

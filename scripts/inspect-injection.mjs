@@ -65,6 +65,10 @@ class InspectionApi {
 	appendEntry(type, data) {
 		this.appendedEntries.push({ type, data });
 	}
+
+	registerMessageRenderer() {}
+
+	sendMessage() {}
 }
 
 async function loadExtension(modulePath) {

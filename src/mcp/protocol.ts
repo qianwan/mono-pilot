@@ -1,24 +1,9 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
-import process from "node:process";
+import { formatErrorMessage, isRecord, toNonEmptyString } from "./config.js";
 
-export const MCP_CONFIG_RELATIVE_PATH = join(".pi", "mcp.json");
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 export const MCP_CLIENT_NAME = "mono-pilot";
 export const MCP_CLIENT_VERSION = "0.1.0";
 export const MCP_REQUEST_TIMEOUT_MS = 20_000;
-
-export interface RawMcpServerConfig {
-	url?: unknown;
-	command?: unknown;
-	args?: unknown;
-	headers?: unknown;
-	env?: unknown;
-	enabled?: unknown;
-	disabled?: unknown;
-}
 
 export interface JsonRpcErrorObject {
 	code?: number;
@@ -39,108 +24,6 @@ export interface RemoteCallResult {
 	sessionId?: string;
 	status: number;
 	contentType?: string;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-export function toNonEmptyString(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	const trimmed = value.trim();
-	if (trimmed.length === 0) return undefined;
-	return trimmed;
-}
-
-export function toBoolean(value: unknown): boolean | undefined {
-	if (typeof value === "boolean") return value;
-	return undefined;
-}
-
-export function formatErrorMessage(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	return String(error);
-}
-
-export function resolveMcpConfigPath(workspaceCwd: string): string | undefined {
-	const envOverride = toNonEmptyString(process.env.MONOPILOT_MCP_CONFIG);
-	const candidates: string[] = [];
-
-	if (envOverride) {
-		candidates.push(isAbsolute(envOverride) ? resolve(envOverride) : resolve(workspaceCwd, envOverride));
-	}
-
-	candidates.push(resolve(workspaceCwd, MCP_CONFIG_RELATIVE_PATH));
-	candidates.push(resolve(homedir(), MCP_CONFIG_RELATIVE_PATH));
-
-	for (const candidate of candidates) {
-		if (existsSync(candidate)) return candidate;
-	}
-
-	return undefined;
-}
-
-export async function parseMcpConfig(configPath: string): Promise<Record<string, RawMcpServerConfig>> {
-	const rawText = await readFile(configPath, "utf-8");
-	return _parseMcpConfigContent(rawText, configPath);
-}
-
-function _parseMcpConfigContent(rawText: string, configPath: string): Record<string, RawMcpServerConfig> {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(rawText);
-	} catch (error) {
-		throw new Error(`Invalid JSON in MCP config: ${formatErrorMessage(error)}`);
-	}
-
-	if (!isRecord(parsed)) {
-		throw new Error("MCP config root must be a JSON object.");
-	}
-
-	const serversValue = parsed.mcpServers;
-	if (!isRecord(serversValue)) return {};
-
-	const result: Record<string, RawMcpServerConfig> = {};
-	for (const [serverName, serverConfig] of Object.entries(serversValue)) {
-		if (!isRecord(serverConfig)) continue;
-		result[serverName] = serverConfig as RawMcpServerConfig;
-	}
-
-	return result;
-}
-
-export function isServerEnabled(config: RawMcpServerConfig): boolean {
-	const disabled = toBoolean(config.disabled);
-	if (disabled === true) return false;
-
-	const enabled = toBoolean(config.enabled);
-	if (enabled === false) return false;
-
-	return true;
-}
-
-export function inferTransport(config: RawMcpServerConfig): "remote" | "stdio" | "unknown" {
-	if (toNonEmptyString(config.url)) return "remote";
-	if (toNonEmptyString(config.command)) return "stdio";
-	return "unknown";
-}
-
-export function extractStringHeaders(rawHeaders: unknown): Record<string, string> {
-	if (!isRecord(rawHeaders)) return {};
-	const headers: Record<string, string> = {};
-
-	for (const [key, value] of Object.entries(rawHeaders)) {
-		const headerName = key.trim();
-		if (!headerName) continue;
-		if (typeof value === "string") headers[headerName] = value;
-	}
-
-	return headers;
-}
-
-export function getHeaderKeys(headers: Record<string, string>): string[] | undefined {
-	const keys = Object.keys(headers).sort((a, b) => a.localeCompare(b));
-	return keys.length > 0 ? keys : undefined;
 }
 
 export function parseSseJsonPayload(rawBody: string): JsonRpcResponse | undefined {

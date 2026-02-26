@@ -1,24 +1,8 @@
-import { homedir } from "node:os";
-import { resolve } from "node:path";
-import { type ExtensionAPI, keyHint } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
-import {
-	createRpcRequestId,
-	extractStringHeaders,
-	formatErrorMessage,
-	formatJsonRpcError,
-	inferTransport,
-	isRecord,
-	isServerEnabled,
-	MCP_CONFIG_RELATIVE_PATH,
-	parseMcpConfig,
-	postJsonRpcRequest,
-	resolveMcpConfigPath,
-	toNonEmptyString,
-	initializeMcpSession,
-	type RawMcpServerConfig,
-} from "../src/utils/mcp-client.js";
+import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../src/mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
+import { formatErrorMessage, isRecord, toNonEmptyString } from "../src/mcp/config.js";
 
 const DESCRIPTION = `List available MCP tools from configured MCP servers. Each returned tool includes server metadata. If server is provided, results are limited to that server. If toolName is provided, returns full documentation and input JSON schema for matching tools.`;
 
@@ -39,7 +23,7 @@ const listMcpToolsSchema = Type.Object({
 type ListMcpToolsInput = Static<typeof listMcpToolsSchema>;
 
 interface ListMcpToolsDetails {
-	config_path?: string;
+	config_paths?: string[];
 	servers_matched?: number;
 	servers_queried?: number;
 	servers_failed?: number;
@@ -98,18 +82,10 @@ async function listRemoteMcpTools(options: {
 		if (!isRecord(raw)) continue;
 		const name = toNonEmptyString(raw.name);
 		if (!name) continue;
-
-		tools.push({
-			name,
-			description: toNonEmptyString(raw.description),
-			inputSchema: raw.inputSchema,
-		});
+		tools.push({ name, description: toNonEmptyString(raw.description), inputSchema: raw.inputSchema });
 	}
 
-	return {
-		tools,
-		nextCursor: toNonEmptyString(body.result.nextCursor),
-	};
+	return { tools, nextCursor: toNonEmptyString(body.result.nextCursor) };
 }
 
 function normalizeOptionalString(value: string | undefined): string | undefined {
@@ -125,12 +101,16 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 		description: DESCRIPTION,
 		parameters: listMcpToolsSchema,
 		async execute(toolCallId, params: ListMcpToolsInput, signal, _onUpdate, ctx) {
-			let serverFilter: string | undefined;
-			let toolNameFilter: string | undefined;
+			const serverFilter = normalizeOptionalString(params.server);
+			const toolNameFilter = normalizeOptionalString(params.toolName);
+
+			let targetServers: TargetServer[];
+			let sources: McpConfigSource[];
 
 			try {
-				serverFilter = normalizeOptionalString(params.server);
-				toolNameFilter = normalizeOptionalString(params.toolName);
+				const result = await resolveTargetServers(ctx.cwd, serverFilter);
+				targetServers = result.servers;
+				sources = result.sources;
 			} catch (error) {
 				const message = formatErrorMessage(error);
 				return {
@@ -138,48 +118,6 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 					details: { error: message } satisfies ListMcpToolsDetails,
 					isError: true,
 				};
-			}
-
-			const configPath = resolveMcpConfigPath(ctx.cwd);
-			if (!configPath) {
-				const workspaceCandidate = resolve(ctx.cwd, MCP_CONFIG_RELATIVE_PATH);
-				const homeCandidate = resolve(homedir(), MCP_CONFIG_RELATIVE_PATH);
-				const message = `MCP config not found. Checked:\n- ${workspaceCandidate}\n- ${homeCandidate}`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: { error: message } satisfies ListMcpToolsDetails,
-					isError: true,
-				};
-			}
-
-			let servers: Record<string, RawMcpServerConfig>;
-			try {
-				servers = await parseMcpConfig(configPath);
-			} catch (error) {
-				const message = formatErrorMessage(error);
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						error: message,
-					} satisfies ListMcpToolsDetails,
-					isError: true,
-				};
-			}
-
-			const targetServers: Array<{ name: string; url: string; headers: Record<string, string> }> = [];
-
-			for (const [serverName, serverConfig] of Object.entries(servers)) {
-				if (serverFilter && serverName !== serverFilter) continue;
-				if (!isServerEnabled(serverConfig)) continue;
-				if (inferTransport(serverConfig) !== "remote") continue;
-				const serverUrl = toNonEmptyString(serverConfig.url);
-				if (!serverUrl) continue;
-				targetServers.push({
-					name: serverName,
-					url: serverUrl,
-					headers: extractStringHeaders(serverConfig.headers),
-				});
 			}
 
 			if (targetServers.length === 0) {
@@ -189,14 +127,17 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: message }],
 					details: {
-						config_path: configPath,
+						config_paths: sources.map((s) => s.path),
 						servers_matched: 0,
 					} satisfies ListMcpToolsDetails,
 				};
 			}
 
 			const lines: string[] = [];
-			lines.push(`MCP config: ${configPath}`);
+			lines.push("MCP config:");
+			for (const source of sources) {
+				lines.push(`- ${source.scope}: ${source.path}`);
+			}
 			lines.push(`Servers matched: ${targetServers.length}`);
 			if (serverFilter) lines.push(`Server filter: ${serverFilter}`);
 			if (toolNameFilter) lines.push(`Tool filter: ${toolNameFilter}`);
@@ -228,7 +169,6 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 					}
 
 					if (toolNameFilter) {
-						// Detailed mode
 						for (const tool of matchedTools) {
 							totalTools++;
 							lines.push(`## [${target.name}] ${tool.name}`);
@@ -247,7 +187,6 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 							}
 						}
 					} else {
-						// Summary mode
 						lines.push(`Tools returned: ${matchedTools.length}`);
 						lines.push("");
 						for (const tool of matchedTools) {
@@ -278,7 +217,7 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 			return {
 				content: [{ type: "text", text: lines.join("\n").trim() }],
 				details: {
-					config_path: configPath,
+					config_paths: sources.map((s) => s.path),
 					servers_matched: targetServers.length,
 					servers_queried: targetServers.length,
 					servers_failed: serversFailed,

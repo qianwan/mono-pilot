@@ -1,7 +1,5 @@
-import { existsSync, type Dirent } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -15,23 +13,22 @@ import {
 } from "./mode-runtime.js";
 import {
 	createRpcRequestId,
-	extractStringHeaders,
-	isRecord,
-	isServerEnabled,
-	MCP_CONFIG_RELATIVE_PATH,
-	parseMcpConfig,
 	postJsonRpcRequest,
-	resolveMcpConfigPath,
-	toNonEmptyString,
 	MCP_PROTOCOL_VERSION,
 	MCP_CLIENT_NAME,
 	MCP_CLIENT_VERSION,
-	type RawMcpServerConfig,
-} from "../utils/mcp-client.js";
+} from "../mcp/protocol.js";
+import {
+	extractStringHeaders,
+	isRecord,
+	isServerEnabled,
+	loadMcpConfig,
+	toNonEmptyString,
+} from "../mcp/config.js";
+import { discoverRules } from "../rules/discovery.js";
 
 const PLAN_MODE_REMINDER_PATH = fileURLToPath(new URL("../../tools/plan-mode-reminder.md", import.meta.url));
 const ASK_MODE_REMINDER_PATH = fileURLToPath(new URL("../../tools/ask-mode-reminder.md", import.meta.url));
-const RULES_RELATIVE_DIR = join(".pi", "rules");
 const MCP_INSTRUCTIONS_DESCRIPTION = "Instructions provided by MCP servers to help use them properly";
 const USER_QUERY_RENDER_PATCH_FLAG = "__monoPilotUserQueryRenderPatched__";
 
@@ -126,17 +123,15 @@ async function fetchServerInstructions(
 }
 
 async function buildMcpInstructionsEnvelope(workspaceCwd: string): Promise<string | undefined> {
-	const configPath = resolveMcpConfigPath(workspaceCwd);
-	if (!configPath) return undefined;
-
-	let servers: Record<string, RawMcpServerConfig>;
+	let config;
 	try {
-		servers = await parseMcpConfig(configPath);
+		config = await loadMcpConfig(workspaceCwd);
 	} catch {
 		return undefined;
 	}
+	if (!config) return undefined;
 
-	const serverEntries = Object.entries(servers)
+	const serverEntries = Object.entries(config.servers)
 		.filter(([, config]) => isServerEnabled(config))
 		.map(([name, config]) => {
 			const serverName = normalizeServerLabel(name);
@@ -187,54 +182,26 @@ async function buildMcpInstructionsEnvelope(workspaceCwd: string): Promise<strin
 }
 
 async function buildRulesEnvelope(workspaceCwd: string): Promise<string | undefined> {
-	const rulesDirPath = resolve(workspaceCwd, RULES_RELATIVE_DIR);
-	const userRulesDirPath = resolve(homedir(), RULES_RELATIVE_DIR);
+	const { userRules, projectRules } = await discoverRules(workspaceCwd);
+	const allRulePaths = [...userRules, ...projectRules];
+	if (allRulePaths.length === 0) return undefined;
 
-	const loadRulesFromDir = async (dirPath: string): Promise<Map<string, string>> => {
-		if (!existsSync(dirPath)) return new Map();
-
-		let directoryEntries: Dirent<string>[];
+	const ruleEntries: Array<{ filename: string; content: string }> = [];
+	for (const filePath of allRulePaths) {
 		try {
-			directoryEntries = await readdir(dirPath, { withFileTypes: true, encoding: "utf8" });
-		} catch {
-			return new Map();
-		}
-
-		const ruleFileNames = directoryEntries
-			.filter((entry) => entry.isFile() && entry.name.endsWith(".rule.txt"))
-			.map((entry) => entry.name)
-			.sort((a, b) => a.localeCompare(b));
-
-		const rules = new Map<string, string>();
-		for (const ruleFileName of ruleFileNames) {
-			const ruleFilePath = resolve(dirPath, ruleFileName);
-			try {
-				const content = await readFile(ruleFilePath, "utf-8");
-				const normalized = content.trim();
-				if (normalized.length > 0) {
-					rules.set(ruleFileName, normalized);
-				}
-			} catch {
-				// Ignore unreadable rule files.
+			const content = await readFile(filePath, "utf-8");
+			const normalized = content.trim();
+			if (normalized.length > 0) {
+				ruleEntries.push({ filename: basename(filePath), content: normalized });
 			}
+		} catch {
+			// Ignore unreadable rule files.
 		}
-
-		return rules;
-	};
-
-	const userRules = await loadRulesFromDir(userRulesDirPath);
-	const workspaceRules = await loadRulesFromDir(rulesDirPath);
-	const mergedRules = new Map(userRules);
-	for (const [fileName, content] of workspaceRules) {
-		mergedRules.set(fileName, content);
 	}
 
-	if (mergedRules.size === 0) return undefined;
+	if (ruleEntries.length === 0) return undefined;
 
-	const rules = Array.from(mergedRules.entries())
-		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([, content]) => content);
-
+	const rules = ruleEntries.sort((a, b) => a.filename.localeCompare(b.filename)).map((e) => e.content);
 	const lines: string[] = ["<rules>"];
 	for (const rule of rules) {
 		lines.push("<user_rule>");

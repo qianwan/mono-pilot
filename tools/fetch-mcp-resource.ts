@@ -1,24 +1,10 @@
-import { homedir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { type ExtensionAPI, keyHint } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
-import {
-	createRpcRequestId,
-	extractStringHeaders,
-	formatErrorMessage,
-	formatJsonRpcError,
-	inferTransport,
-	isRecord,
-	isServerEnabled,
-	MCP_CONFIG_RELATIVE_PATH,
-	parseMcpConfig,
-	postJsonRpcRequest,
-	resolveMcpConfigPath,
-	toNonEmptyString,
-	initializeMcpSession,
-	type RawMcpServerConfig,
-} from "../src/utils/mcp-client.js";
+import { McpServerError, resolveTargetServer, type TargetServer } from "../src/mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
+import { formatErrorMessage, isRecord, toNonEmptyString } from "../src/mcp/config.js";
 
 const DESCRIPTION = `Reads a specific resource from an MCP server, identified by server name and resource URI. Optionally, set downloadPath (relative to the workspace) to save the resource to disk; when set, the resource will be downloaded and not returned to the model.`;
 
@@ -36,7 +22,7 @@ const fetchMcpResourceSchema = Type.Object({
 type FetchMcpResourceInput = Static<typeof fetchMcpResourceSchema>;
 
 interface FetchMcpResourceDetails {
-	config_path?: string;
+	config_paths?: string[];
 	server: string;
 	uri: string;
 	transport?: "remote" | "stdio" | "unknown";
@@ -69,9 +55,7 @@ async function fetchRemoteMcpResource(options: {
 			jsonrpc: "2.0",
 			id: createRpcRequestId(`${options.toolCallId}:resources.read`),
 			method: "resources/read",
-			params: {
-				uri: options.uri,
-			},
+			params: { uri: options.uri },
 		},
 		parentSignal: options.signal,
 		sessionId,
@@ -96,7 +80,6 @@ async function fetchRemoteMcpResource(options: {
 		if (!isRecord(raw)) continue;
 		const contentUri = toNonEmptyString(raw.uri);
 		if (!contentUri) continue;
-
 		contents.push({
 			uri: contentUri,
 			mimeType: toNonEmptyString(raw.mimeType),
@@ -158,79 +141,21 @@ export default function fetchMcpResourceExtension(pi: ExtensionAPI) {
 				};
 			}
 
-			const configPath = resolveMcpConfigPath(ctx.cwd);
-			if (!configPath) {
-				const workspaceCandidate = resolve(ctx.cwd, MCP_CONFIG_RELATIVE_PATH);
-				const homeCandidate = resolve(homedir(), MCP_CONFIG_RELATIVE_PATH);
-				const message = `MCP config not found. Checked:\n- ${workspaceCandidate}\n- ${homeCandidate}`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						server: serverName,
-						uri,
-						error: message,
-					} satisfies FetchMcpResourceDetails,
-					isError: true,
-				};
-			}
+			let server: TargetServer;
+			let configPaths: string[];
 
-			let servers: Record<string, RawMcpServerConfig>;
 			try {
-				servers = await parseMcpConfig(configPath);
+				const result = await resolveTargetServer(ctx.cwd, serverName);
+				server = result.server;
+				configPaths = result.configPaths;
 			} catch (error) {
 				const message = formatErrorMessage(error);
+				const transport = error instanceof McpServerError ? error.transport : undefined;
+				const paths = error instanceof McpServerError ? error.configPaths : undefined;
 				return {
 					content: [{ type: "text", text: message }],
 					details: {
-						config_path: configPath,
-						server: serverName,
-						uri,
-						error: message,
-					} satisfies FetchMcpResourceDetails,
-					isError: true,
-				};
-			}
-
-			const serverConfig = servers[serverName];
-			if (!serverConfig) {
-				const message = `MCP server '${serverName}' not found in ${configPath}.`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						server: serverName,
-						uri,
-						error: message,
-					} satisfies FetchMcpResourceDetails,
-					isError: true,
-				};
-			}
-
-			if (!isServerEnabled(serverConfig)) {
-				const message = `MCP server '${serverName}' is disabled in config.`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						server: serverName,
-						uri,
-						transport: inferTransport(serverConfig),
-						error: message,
-					} satisfies FetchMcpResourceDetails,
-					isError: true,
-				};
-			}
-
-			const transport = inferTransport(serverConfig);
-			if (transport === "stdio") {
-				const command = toNonEmptyString(serverConfig.command);
-				const message =
-					`MCP stdio transport is not supported yet in FetchMcpResource.` +
-					(command ? ` Configured command: ${command}` : "");
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
+						config_paths: paths,
 						server: serverName,
 						uri,
 						transport,
@@ -239,29 +164,11 @@ export default function fetchMcpResourceExtension(pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-
-			const serverUrl = toNonEmptyString(serverConfig.url);
-			if (!serverUrl) {
-				const message = `MCP server '${serverName}' is missing a remote URL.`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						server: serverName,
-						uri,
-						transport,
-						error: message,
-					} satisfies FetchMcpResourceDetails,
-					isError: true,
-				};
-			}
-
-			const headers = extractStringHeaders(serverConfig.headers);
 
 			try {
 				const contents = await fetchRemoteMcpResource({
-					serverUrl,
-					serverHeaders: headers,
+					serverUrl: server.url,
+					serverHeaders: server.headers,
 					uri,
 					signal,
 					toolCallId,
@@ -271,21 +178,20 @@ export default function fetchMcpResourceExtension(pi: ExtensionAPI) {
 					return {
 						content: [{ type: "text", text: `Resource '${uri}' returned no content.` }],
 						details: {
-							config_path: configPath,
+							config_paths: configPaths,
 							server: serverName,
 							uri,
-							transport,
-							server_url: serverUrl,
+							transport: "remote",
+							server_url: server.url,
 							contents_count: 0,
 						} satisfies FetchMcpResourceDetails,
 					};
 				}
 
 				if (downloadPath) {
-					// We only support downloading the first content item currently
+					// Only the first content item is downloaded
 					const contentToDownload = contents[0];
 					const absoluteTarget = resolve(ctx.cwd, downloadPath);
-					const { mkdir, writeFile } = await import("node:fs/promises");
 					await mkdir(dirname(absoluteTarget), { recursive: true });
 
 					let bytesWritten = 0;
@@ -308,18 +214,17 @@ export default function fetchMcpResourceExtension(pi: ExtensionAPI) {
 							},
 						],
 						details: {
-							config_path: configPath,
+							config_paths: configPaths,
 							server: serverName,
 							uri,
-							transport,
-							server_url: serverUrl,
+							transport: "remote",
+							server_url: server.url,
 							contents_count: contents.length,
 							downloaded_to: downloadPath,
 						} satisfies FetchMcpResourceDetails,
 					};
 				}
 
-				// Return contents directly
 				const lines: string[] = [];
 				for (let i = 0; i < contents.length; i++) {
 					const item = contents[i];
@@ -342,11 +247,11 @@ export default function fetchMcpResourceExtension(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: lines.join("\n").trim() }],
 					details: {
-						config_path: configPath,
+						config_paths: configPaths,
 						server: serverName,
 						uri,
-						transport,
-						server_url: serverUrl,
+						transport: "remote",
+						server_url: server.url,
 						contents_count: contents.length,
 					} satisfies FetchMcpResourceDetails,
 				};
@@ -355,11 +260,11 @@ export default function fetchMcpResourceExtension(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: `FetchMcpResource failed: ${message}` }],
 					details: {
-						config_path: configPath,
+						config_paths: configPaths,
 						server: serverName,
 						uri,
-						transport,
-						server_url: serverUrl,
+						transport: "remote",
+						server_url: server.url,
 						error: message,
 					} satisfies FetchMcpResourceDetails,
 					isError: true,

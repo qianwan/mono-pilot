@@ -1,14 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { hasMessageEntries } from "./mode-runtime.js";
+import { isServerEnabled, loadMcpConfig } from "../mcp/config.js";
+import type { McpConfigScope } from "../mcp/config.js";
+import { toNonEmptyString } from "../mcp/config.js";
+import { discoverRules } from "../rules/discovery.js";
 
 const SESSION_HINTS_MESSAGE_TYPE = "SessionHints";
-const RULES_RELATIVE_DIR = join(".pi", "rules");
 const MONO_PILOT_NAME = "mono-pilot";
 const MAX_VERSION_SEARCH_DEPTH = 6;
 
@@ -17,45 +19,43 @@ let cachedVersion: string | null = null;
 interface SessionHintsDetails {
 	userRules: string[];
 	projectRules: string[];
+	userMcpServers: McpServerEntry[];
+	projectMcpServers: McpServerEntry[];
 }
 
-/** List *.rule.txt full paths from a directory (empty array if dir missing). */
-async function listRuleFiles(dirPath: string): Promise<string[]> {
-	if (!existsSync(dirPath)) return [];
+interface McpServerEntry {
+	name: string;
+	url?: string;
+}
+
+async function discoverMcpServers(
+	cwd: string,
+): Promise<Pick<SessionHintsDetails, "userMcpServers" | "projectMcpServers">> {
+	let config;
 	try {
-		const entries = await readdir(dirPath, { withFileTypes: true, encoding: "utf8" });
-		return entries
-			.filter((e) => e.isFile() && e.name.endsWith(".rule.txt"))
-			.map((e) => resolve(dirPath, e.name))
-			.sort((a, b) => a.localeCompare(b));
+		config = await loadMcpConfig(cwd);
 	} catch {
-		return [];
+		return { userMcpServers: [], projectMcpServers: [] };
 	}
-}
+	if (!config) return { userMcpServers: [], projectMcpServers: [] };
 
-/** Discover rules files grouped by scope, deduped by rule name. */
-async function discoverRules(cwd: string): Promise<SessionHintsDetails> {
-	const workspaceRulesDir = resolve(cwd, RULES_RELATIVE_DIR);
-	const userRulesDir = resolve(homedir(), RULES_RELATIVE_DIR);
+	const groups: { user: McpServerEntry[]; project: McpServerEntry[] } = { user: [], project: [] };
 
-	const [workspaceRules, userRules] = await Promise.all([
-		listRuleFiles(workspaceRulesDir),
-		listRuleFiles(userRulesDir),
-	]);
+	for (const [serverName, serverConfig] of Object.entries(config.servers)) {
+		if (!isServerEnabled(serverConfig)) continue;
+		const source = config.sourceByServer[serverName];
+		if (!source) continue;
+		groups[source.scope].push({ name: serverName, url: toNonEmptyString(serverConfig.url) });
+	}
 
-	const seenNames = new Set<string>();
-	const dedupeByName = (rules: string[]) =>
-		rules.filter((filePath) => {
-			const name = basename(filePath, ".rule.txt");
-			if (seenNames.has(name)) return false;
-			seenNames.add(name);
-			return true;
-		});
+	for (const servers of Object.values(groups)) {
+		servers.sort((a, b) => a.name.localeCompare(b.name));
+	}
 
-	const uniqueWorkspaceRules = dedupeByName(workspaceRules);
-	const uniqueUserRules = dedupeByName(userRules);
-
-	return { userRules: uniqueUserRules, projectRules: uniqueWorkspaceRules };
+	return {
+		userMcpServers: groups.user,
+		projectMcpServers: groups.project,
+	};
 }
 
 function shortenHome(filePath: string): string {
@@ -110,9 +110,16 @@ export default function sessionHintsExtension(pi: ExtensionAPI) {
 
 		const userRules = details?.userRules ?? [];
 		const projectRules = details?.projectRules ?? [];
+		const userMcpServers = details?.userMcpServers ?? [];
+		const projectMcpServers = details?.projectMcpServers ?? [];
+		const hasRules = userRules.length > 0 || projectRules.length > 0;
+		const hasMcp = userMcpServers.length > 0 || projectMcpServers.length > 0;
 
-		if (userRules.length > 0 || projectRules.length > 0) {
+		if (hasRules || hasMcp) {
 			lines.push("");
+		}
+
+		if (hasRules) {
 			lines.push(theme.fg("mdHeading", "[Rules]"));
 
 			if (userRules.length > 0) {
@@ -130,6 +137,32 @@ export default function sessionHintsExtension(pi: ExtensionAPI) {
 			}
 		}
 
+		if (hasRules && hasMcp) {
+			lines.push("");
+		}
+
+		if (hasMcp) {
+			lines.push(theme.fg("mdHeading", "[MCP Servers]"));
+
+			if (userMcpServers.length > 0) {
+				lines.push(`  ${theme.fg("accent", "user")}`);
+				for (const server of userMcpServers) {
+					const urlPart = server.url ? `  ${theme.fg("muted", server.url)}` : "";
+					lines.push(`    ${theme.fg("dim", server.name)}${urlPart}`);
+				}
+			}
+
+			if (projectMcpServers.length > 0) {
+				lines.push(`  ${theme.fg("accent", "project")}`);
+				for (const server of projectMcpServers) {
+					const urlPart = server.url ? `  ${theme.fg("muted", server.url)}` : "";
+					lines.push(`    ${theme.fg("dim", server.name)}${urlPart}`);
+				}
+			}
+
+
+		}
+
 		return new Text(lines.join("\n"), 0, 0);
 	});
 
@@ -139,7 +172,14 @@ export default function sessionHintsExtension(pi: ExtensionAPI) {
 		const entries = ctx.sessionManager.getEntries();
 		if (hasMessageEntries(entries)) return;
 
-		const details = await discoverRules(ctx.cwd);
+		const [rulesDetails, mcpDetails] = await Promise.all([
+			discoverRules(ctx.cwd),
+			discoverMcpServers(ctx.cwd),
+		]);
+		const details: SessionHintsDetails = {
+			...rulesDetails,
+			...mcpDetails,
+		};
 
 		pi.sendMessage(
 			{

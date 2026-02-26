@@ -1,24 +1,8 @@
-import { homedir } from "node:os";
-import { resolve } from "node:path";
-import { type ExtensionAPI, keyHint } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
-import {
-	createRpcRequestId,
-	extractStringHeaders,
-	formatErrorMessage,
-	formatJsonRpcError,
-	inferTransport,
-	isRecord,
-	isServerEnabled,
-	MCP_CONFIG_RELATIVE_PATH,
-	parseMcpConfig,
-	postJsonRpcRequest,
-	resolveMcpConfigPath,
-	toNonEmptyString,
-	initializeMcpSession,
-	type RawMcpServerConfig,
-} from "../src/utils/mcp-client.js";
+import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../src/mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
+import { formatErrorMessage, isRecord, toNonEmptyString } from "../src/mcp/config.js";
 
 const DESCRIPTION = `List available resources from configured MCP servers. Each returned resource will include all standard MCP resource fields plus a 'server' field indicating which server the resource belongs to. MCP resources are _not_ the same as tools, so don't call this function to discover MCP tools.`;
 
@@ -34,7 +18,7 @@ const listMcpResourcesSchema = Type.Object({
 type ListMcpResourcesInput = Static<typeof listMcpResourcesSchema>;
 
 interface ListMcpResourcesDetails {
-	config_path?: string;
+	config_paths?: string[];
 	servers_matched?: number;
 	servers_queried?: number;
 	servers_failed?: number;
@@ -95,7 +79,6 @@ async function listRemoteMcpResources(options: {
 		const uri = toNonEmptyString(raw.uri);
 		const name = toNonEmptyString(raw.name);
 		if (!uri || !name) continue;
-
 		resources.push({
 			uri,
 			name,
@@ -104,13 +87,10 @@ async function listRemoteMcpResources(options: {
 		});
 	}
 
-	return {
-		resources,
-		nextCursor: toNonEmptyString(resourcesBody.result.nextCursor),
-	};
+	return { resources, nextCursor: toNonEmptyString(resourcesBody.result.nextCursor) };
 }
 
-function normalizeServerFilter(value: string | undefined): string | undefined {
+function normalizeOptionalString(value: string | undefined): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const normalized = value.trim();
 	return normalized || undefined;
@@ -123,10 +103,15 @@ export default function listMcpResourcesExtension(pi: ExtensionAPI) {
 		description: DESCRIPTION,
 		parameters: listMcpResourcesSchema,
 		async execute(toolCallId, params: ListMcpResourcesInput, signal, _onUpdate, ctx) {
-			let serverFilter: string | undefined;
+			const serverFilter = normalizeOptionalString(params.server);
+
+			let targetServers: TargetServer[];
+			let sources: McpConfigSource[];
 
 			try {
-				serverFilter = normalizeServerFilter(params.server);
+				const result = await resolveTargetServers(ctx.cwd, serverFilter);
+				targetServers = result.servers;
+				sources = result.sources;
 			} catch (error) {
 				const message = formatErrorMessage(error);
 				return {
@@ -134,48 +119,6 @@ export default function listMcpResourcesExtension(pi: ExtensionAPI) {
 					details: { error: message } satisfies ListMcpResourcesDetails,
 					isError: true,
 				};
-			}
-
-			const configPath = resolveMcpConfigPath(ctx.cwd);
-			if (!configPath) {
-				const workspaceCandidate = resolve(ctx.cwd, MCP_CONFIG_RELATIVE_PATH);
-				const homeCandidate = resolve(homedir(), MCP_CONFIG_RELATIVE_PATH);
-				const message = `MCP config not found. Checked:\n- ${workspaceCandidate}\n- ${homeCandidate}`;
-				return {
-					content: [{ type: "text", text: message }],
-					details: { error: message } satisfies ListMcpResourcesDetails,
-					isError: true,
-				};
-			}
-
-			let servers: Record<string, RawMcpServerConfig>;
-			try {
-				servers = await parseMcpConfig(configPath);
-			} catch (error) {
-				const message = formatErrorMessage(error);
-				return {
-					content: [{ type: "text", text: message }],
-					details: {
-						config_path: configPath,
-						error: message,
-					} satisfies ListMcpResourcesDetails,
-					isError: true,
-				};
-			}
-
-			const targetServers: Array<{ name: string; url: string; headers: Record<string, string> }> = [];
-
-			for (const [serverName, serverConfig] of Object.entries(servers)) {
-				if (serverFilter && serverName !== serverFilter) continue;
-				if (!isServerEnabled(serverConfig)) continue;
-				if (inferTransport(serverConfig) !== "remote") continue;
-				const serverUrl = toNonEmptyString(serverConfig.url);
-				if (!serverUrl) continue;
-				targetServers.push({
-					name: serverName,
-					url: serverUrl,
-					headers: extractStringHeaders(serverConfig.headers),
-				});
 			}
 
 			if (targetServers.length === 0) {
@@ -185,14 +128,17 @@ export default function listMcpResourcesExtension(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: message }],
 					details: {
-						config_path: configPath,
+						config_paths: sources.map((s) => s.path),
 						servers_matched: 0,
 					} satisfies ListMcpResourcesDetails,
 				};
 			}
 
 			const lines: string[] = [];
-			lines.push(`MCP config: ${configPath}`);
+			lines.push("MCP config:");
+			for (const source of sources) {
+				lines.push(`- ${source.scope}: ${source.path}`);
+			}
 			lines.push(`Servers matched: ${targetServers.length}`);
 			if (serverFilter) lines.push(`Server filter: ${serverFilter}`);
 
@@ -219,8 +165,7 @@ export default function listMcpResourcesExtension(pi: ExtensionAPI) {
 						lines.push(`  name: ${resource.name}`);
 						if (resource.mimeType) lines.push(`  mimeType: ${resource.mimeType}`);
 						if (resource.description) {
-							const descLines = resource.description.split("\n");
-							for (const descLine of descLines) {
+							for (const descLine of resource.description.split("\n")) {
 								lines.push(`  ${descLine}`);
 							}
 						}
@@ -237,7 +182,7 @@ export default function listMcpResourcesExtension(pi: ExtensionAPI) {
 			return {
 				content: [{ type: "text", text: lines.join("\n") }],
 				details: {
-					config_path: configPath,
+					config_paths: sources.map((s) => s.path),
 					servers_matched: targetServers.length,
 					servers_queried: targetServers.length,
 					servers_failed: serversFailed,

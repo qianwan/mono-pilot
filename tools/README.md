@@ -36,7 +36,7 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
 - `subagent.ts` / `subagent-description.md` (`Subagent`)
   - Launch delegated subagent subprocesses with foreground/background and parallel orchestration.
 - `list-mcp-resources.ts` (`ListMcpResources`)
-  - Read `.pi/mcp.json` config and list MCP resources with server metadata.
+  - Read `.pi/mcp.json` (project) and `~/.pi/mcp.json` (user) configs to list MCP resources with server metadata.
 - `fetch-mcp-resource.ts` (`FetchMcpResource`)
   - Fetch a specific MCP resource by server + URI, optionally writing to workspace.
 - `list-mcp-tools.ts` (`ListMcpTools`)

@@ -48,6 +48,8 @@ If you pass `--tools`, MonoPilot removes built-in `edit`, `write`, `read`, `grep
 - `src/extensions/mono-pilot.ts` – extension entrypoint (tool wiring)
 - `src/extensions/system-prompt.ts` – provider-agnostic prompt stack
 - `src/extensions/user-message.ts` – user message envelope assembly
+- `src/mcp/` – config loading, JSON-RPC transport, server resolution
+- `src/rules/` – rule file discovery (shared by envelope and session hints)
 - `tools/` – tool implementations and descriptions (see `tools/README.md`)
 
 ## Cursor-styled tools
@@ -85,17 +87,20 @@ The full Cursor-styled tool list exposed by the extension:
 
 ## User rules
 
-MonoPilot can inject workspace user rules into the runtime envelope on each input (handled by `src/extensions/user-message.ts`).
+MonoPilot injects user rules into the runtime envelope on each turn (handled by `src/extensions/user-message.ts`).
 
-- Rules live in `.pi/rules/*.rule.txt` under the workspace root
-- Each file becomes one `<user_rule>` block wrapped by a `<rules>` envelope
-- Files are read in filename order; empty files are ignored
-- If no rules are present, the `<rules>` section is omitted
+Rules are loaded from two locations:
+
+- `~/.pi/rules/*.rule.txt` – user-level rules (applies to all projects)
+- `.pi/rules/*.rule.txt` – project-level rules (workspace root)
+
+When the same filename exists in both, the project rule wins. Each file becomes one `<user_rule>` block inside a `<rules>` envelope, sorted by filename. Empty files are ignored; the envelope is omitted if no rules are found.
 
 ## MCP
 
 - The user message envelope issues a lightweight MCP server `initialize` request to collect server instructions.
 - MCP tools then progressively load and surface resources, schemas, and execution only when needed.
+- MCP configs are loaded from `.pi/mcp.json` (project) and `~/.pi/mcp.json` (user); project entries take precedence on name conflicts.
 
 ## Local development
 
