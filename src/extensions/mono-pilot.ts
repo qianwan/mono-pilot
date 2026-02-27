@@ -23,6 +23,7 @@ import lspDiagnosticsExtension from "../../tools/lsp-diagnostics.js";
 import lspSymbolsExtension from "../../tools/lsp-symbols.js";
 import { LSP } from "../lsp/index.js";
 import briefWriteExtension from "../../tools/brief-write.js";
+import { registerSessionMemoryHook } from "../session-memory/hook.js";
 
 const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
@@ -53,6 +54,8 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	for (const register of toolExtensions) {
 		register(pi);
 	}
+
+	registerSessionMemoryHook(pi);
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);
