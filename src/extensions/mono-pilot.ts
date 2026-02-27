@@ -18,6 +18,9 @@ import applyPatchExtension from "../../tools/apply-patch.js";
 import userMessageExtension from "./user-message.js";
 import systemPromptExtension from "./system-prompt.js";
 import sessionHintsExtension from "./session-hints.js";
+import lspDiagnosticsExtension from "../../tools/lsp-diagnostics.js";
+import lspSymbolsExtension from "../../tools/lsp-symbols.js";
+import { LSP } from "../lsp/index.js";
 
 const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
@@ -39,10 +42,16 @@ const toolExtensions: ExtensionFactory[] = [
 	userMessageExtension,
 	systemPromptExtension,
 	sessionHintsExtension,
+	lspDiagnosticsExtension,
+	lspSymbolsExtension,
 ];
 
 export default function monoPilotExtension(pi: ExtensionAPI) {
 	for (const register of toolExtensions) {
 		register(pi);
 	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		LSP.init(ctx.cwd);
+	});
 }

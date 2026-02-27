@@ -5,9 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { hasMessageEntries } from "./mode-runtime.js";
-import { isServerEnabled, loadMcpConfig } from "../mcp/config.js";
-import type { McpConfigScope } from "../mcp/config.js";
-import { toNonEmptyString } from "../mcp/config.js";
+import { isServerEnabled, loadMcpConfig, toNonEmptyString } from "../mcp/config.js";
 import { discoverRules } from "../rules/discovery.js";
 
 const SESSION_HINTS_MESSAGE_TYPE = "SessionHints";
