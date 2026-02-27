@@ -48,6 +48,7 @@ If you pass `--tools`, MonoPilot removes built-in `edit`, `write`, `read`, `grep
 - `src/extensions/mono-pilot.ts` – extension entrypoint (tool wiring)
 - `src/extensions/system-prompt.ts` – provider-agnostic prompt stack
 - `src/extensions/user-message.ts` – user message envelope assembly
+- `src/brief/` – persistent agent memory ("brief" system), inspired by [letta-ai/letta-code](https://github.com/letta-ai/letta-code.git)'s memory architecture, renamed from "memory" to "brief" to distinguish condensed knowledge from conversation history
 - `src/mcp/` – config loading, JSON-RPC transport, server resolution
 - `src/rules/` – rule file discovery (shared by envelope and session hints)
 - `tools/` – tool implementations and descriptions (see `tools/README.md`)

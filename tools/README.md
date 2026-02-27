@@ -48,3 +48,12 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
   - Switch runtime interaction mode (tool supports `plan`; `/plan` toggles Plan/Agent).
 - `apply-patch.ts` / `apply-patch-description.md` (`ApplyPatch`)
   - Apply single-file patches in `*** Begin Patch` format.
+
+### Brief tools
+
+- `brief-write.ts` (`brief_write`)
+  - Write content to a brief file with frontmatter preservation and line-limit validation.
+
+Brief files are stored in `~/.mono-pilot/agents/<agent-id>/brief/`.
+Core briefs are auto-injected into the system prompt via `src/brief/blocks.ts`.
+Reflection reminders are injected every 25 turns via `src/brief/reflection.ts`.

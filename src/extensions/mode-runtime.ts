@@ -92,6 +92,7 @@ export function buildRuntimeEnvelope(
 	reminder: string | undefined,
 	mcpInstructions: string | undefined,
 	rulesEnvelope: string | undefined,
+	briefReminder: string | undefined,
 ): string {
 	const sections: string[] = [];
 	if (rulesEnvelope) {
@@ -102,6 +103,9 @@ export function buildRuntimeEnvelope(
 	}
 	if (reminder) {
 		sections.push(reminder.trim());
+	}
+	if (briefReminder) {
+		sections.push(briefReminder.trim());
 	}
 	sections.push(`<user_query>\n${userQuery}\n</user_query>`);
 	return sections.join("\n\n");

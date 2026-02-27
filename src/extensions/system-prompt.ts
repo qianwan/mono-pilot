@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { formatSkillsForPrompt, loadSkills, type ExtensionAPI, type ToolInfo } from "@mariozechner/pi-coding-agent";
+import { buildBriefBlock } from "../brief/blocks.js";
 
 const NO_DESCRIPTION_PLACEHOLDER = "No short description provided.";
 const PROJECT_CONTEXT_HEADER = "# Project Context";
@@ -17,6 +18,7 @@ const PI_README_PATH_TOKEN = "{{PI_README_PATH}}";
 const PI_DOCS_PATH_TOKEN = "{{PI_DOCS_PATH}}";
 const PI_EXAMPLES_PATH_TOKEN = "{{PI_EXAMPLES_PATH}}";
 const SKILLS_BLOCK_TOKEN = "{{SKILLS_BLOCK}}";
+const BRIEF_BLOCK_TOKEN = "{{BRIEF_BLOCK}}";
 
 const UNIFIED_SYSTEM_PROMPT_TEMPLATE = `You are an expert coding assistant operating inside MonoPilot (a pi-coding-agent compatibility harness) on a user's computer.
 You help users by reading files, executing commands, editing code, and writing new files.
@@ -97,6 +99,8 @@ After substantive edits, use the ReadLints tool to check recently edited files f
 <project_context>
 ${PROJECT_CONTEXT_TOKEN}
 </project_context>
+
+${BRIEF_BLOCK_TOKEN}
 
 <working_with_the_user>
 ## Working with the user
@@ -235,6 +239,7 @@ function renderTemplate(
 		piDocsPath: string;
 		piExamplesPath: string;
 		skillsBlock: string;
+		briefBlock: string;
 	},
 ): string {
 	return template
@@ -253,7 +258,9 @@ function renderTemplate(
 		.split(PI_EXAMPLES_PATH_TOKEN)
 		.join(values.piExamplesPath)
 		.split(SKILLS_BLOCK_TOKEN)
-		.join(values.skillsBlock);
+		.join(values.skillsBlock)
+		.split(BRIEF_BLOCK_TOKEN)
+		.join(values.briefBlock);
 }
 
 function getFallbackDateTimeText(): string {
@@ -329,6 +336,7 @@ export default function systemPromptExtension(pi: ExtensionAPI) {
 		const { skills } = loadSkills({ cwd });
 		const skillsBlock = formatSkillsForPrompt(skills);
 
+		const briefBlock = buildBriefBlock(cwd);
 		const unifiedPrompt = renderTemplate(UNIFIED_SYSTEM_PROMPT_TEMPLATE, {
 			tools,
 			projectContext,
@@ -338,11 +346,13 @@ export default function systemPromptExtension(pi: ExtensionAPI) {
 			piDocsPath: piDocsPaths.docsPath,
 			piExamplesPath: piDocsPaths.examplesPath,
 			skillsBlock,
+			briefBlock,
 		});
 
 		if (unifiedPrompt === event.systemPrompt) {
 			return undefined;
 		}
+        // console.log(unifiedPrompt);
 
 		return { systemPrompt: unifiedPrompt };
 	});

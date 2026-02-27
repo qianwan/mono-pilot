@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { onCompaction } from "../brief/reflection.js";
 import shellExtension from "../../tools/shell.js";
 import globExtension from "../../tools/glob.js";
 import rgExtension from "../../tools/rg.js";
@@ -21,6 +22,7 @@ import sessionHintsExtension from "./session-hints.js";
 import lspDiagnosticsExtension from "../../tools/lsp-diagnostics.js";
 import lspSymbolsExtension from "../../tools/lsp-symbols.js";
 import { LSP } from "../lsp/index.js";
+import briefWriteExtension from "../../tools/brief-write.js";
 
 const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
@@ -44,6 +46,7 @@ const toolExtensions: ExtensionFactory[] = [
 	sessionHintsExtension,
 	lspDiagnosticsExtension,
 	lspSymbolsExtension,
+	briefWriteExtension,
 ];
 
 export default function monoPilotExtension(pi: ExtensionAPI) {
@@ -53,5 +56,9 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);
+	});
+
+	pi.on("session_compact", async () => {
+		onCompaction();
 	});
 }

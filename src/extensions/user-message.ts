@@ -11,6 +11,7 @@ import {
 	ASK_MODE_SWITCH_REMINDER,
 	PLAN_MODE_STILL_ACTIVE_REMINDER,
 } from "./mode-runtime.js";
+import { getBriefReflectionReminder } from "../brief/reflection.js";
 import {
 	createRpcRequestId,
 	postJsonRpcRequest,
@@ -320,9 +321,11 @@ export default function runtimeEnvelopeExtension(pi: ExtensionAPI) {
 			pi.appendEntry(MODE_STATE_ENTRY_TYPE, createModeStateData(snapshot));
 		}
 
+		const briefReminder = getBriefReflectionReminder();
+
 		return {
 			action: "transform",
-			text: buildRuntimeEnvelope(event.text, reminder, mcpInstructions, rulesEnvelope),
+			text: buildRuntimeEnvelope(event.text, reminder, mcpInstructions, rulesEnvelope, briefReminder),
 			images: event.images,
 		};
 	});

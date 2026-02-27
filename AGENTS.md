@@ -27,7 +27,8 @@ Before making any code changes, read these files fully:
 A tool change is only complete when all of the following are true:
 
 - Implementation exists: `tools/<name>.ts`
-- Matching spec exists: `tools/<name>-description.md`
+- Description exists: either a `tools/<name>-description.md` file, or an inline string in the `.ts` file.
+  Use a separate `.md` file for long/structured descriptions; inline is fine when the description is short (a few sentences).
 - Wired into extension entrypoint: `src/extensions/mono-pilot.ts`
 - `tools/README.md` updated
 
