@@ -5,8 +5,10 @@ import {
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
 	formatSize,
+	keyHint,
 	truncateHead,
 } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { globSync } from "glob";
 
@@ -18,6 +20,10 @@ Tool to search for files matching a glob pattern
 - Use this tool when you need to find files by name patterns
 - You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches that are potentially useful as a batch.
 `.trim()
+
+const MAX_RENDER_PATH_CHARS = 120;
+const MAX_RENDER_PATTERN_CHARS = 160;
+const MAX_COLLAPSED_RESULT_LINES = 10;
 
 const globSchema = Type.Object({
 	target_directory: Type.Optional(
@@ -52,6 +58,34 @@ interface GlobDetails {
 	total_matches: number;
 	returned_matches: number;
 	content_truncated?: boolean;
+}
+
+function compactForCommandArg(value: string, maxLength: number): string {
+	const normalized = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, "\\n").trim();
+	if (normalized.length <= maxLength) return normalized;
+	return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function shellQuoteArg(value: string): string {
+	if (value.length === 0) return "''";
+	if (/^[A-Za-z0-9_./:=,+-]+$/.test(value)) return value;
+	return `'${value.replace(/'/g, `"'"'`)}'`;
+}
+
+function getCollapsedResultText(text: string, expanded: boolean): { output: string; remaining: number } {
+	if (text.length === 0) {
+		return { output: text, remaining: 0 };
+	}
+
+	const lines = text.split("\n");
+	if (expanded || lines.length <= MAX_COLLAPSED_RESULT_LINES) {
+		return { output: text, remaining: 0 };
+	}
+
+	return {
+		output: lines.slice(0, MAX_COLLAPSED_RESULT_LINES).join("\n"),
+		remaining: lines.length - MAX_COLLAPSED_RESULT_LINES,
+	};
 }
 
 function normalizeGlobPattern(pattern: string): string {
@@ -118,6 +152,49 @@ export default function (pi: ExtensionAPI) {
 		label: "Glob",
 		description: DESCRIPTION,
 		parameters: globSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<GlobInput>;
+			const pattern =
+				typeof input.glob_pattern === "string" && input.glob_pattern.trim().length > 0
+					? compactForCommandArg(input.glob_pattern, MAX_RENDER_PATTERN_CHARS)
+					: "(missing glob_pattern)";
+			const targetDirectory =
+				typeof input.target_directory === "string" && input.target_directory.trim().length > 0
+					? compactForCommandArg(input.target_directory, MAX_RENDER_PATH_CHARS)
+					: undefined;
+
+			const commandArgs = [pattern];
+			if (targetDirectory) commandArgs.push("--target-directory", targetDirectory);
+			const commandText = commandArgs.map(shellQuoteArg).join(" ");
+
+			let text = theme.fg("toolTitle", theme.bold("Glob"));
+			text += ` ${theme.fg("toolOutput", commandText)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Searching..."), 0, 0);
+			}
+
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock || typeof textBlock.text !== "string") {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+
+			const { output, remaining } = getCollapsedResultText(textBlock.text, expanded);
+			let text = output
+				.split("\n")
+				.map((line) => theme.fg("toolOutput", line))
+				.join("\n");
+
+			if (!expanded && remaining > 0) {
+				text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
+			}
+
+			return new Text(text, 0, 0);
+		},
 		async execute(_toolCallId, params: GlobInput, _signal, _onUpdate, ctx) {
 			const targetDirectory = resolveTargetDirectory(params.target_directory, ctx.cwd);
 			const normalizedPattern = normalizeGlobPattern(params.glob_pattern);
