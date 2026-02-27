@@ -27,6 +27,10 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
   - Delete files or directories.
 - `semantic-search.ts` / `semantic-search-description.md` (`SemanticSearch`)
   - Search code semantically by intent and meaning.
+- `memory-search.ts` (`memory_search`)
+  - Search indexed memory files for relevant snippets.
+- `memory-get.ts` (`memory_get`)
+  - Read a snippet from a memory file.
 - `web-search.ts` (`WebSearch`)
   - Search the web for current information with result snippets.
 - `web-fetch.ts` (`WebFetch`)

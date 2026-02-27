@@ -50,6 +50,7 @@ If you pass `--tools`, MonoPilot removes built-in `edit`, `write`, `read`, `grep
 - `src/extensions/user-message.ts` – user message envelope assembly
 - `src/brief/` – persistent agent memory ("brief" system), inspired by [letta-ai/letta-code](https://github.com/letta-ai/letta-code.git)'s memory architecture, renamed from "memory" to "brief" to distinguish condensed knowledge from conversation history
 - `src/session-memory/` – session switch + pre-compaction hook that saves recent messages to `~/.mono-pilot/agents/<agent-id>/memory/`
+- `src/memory/` – memory search indexing + retrieval (builtin, SQLite + FTS)
 - `src/mcp/` – config loading, JSON-RPC transport, server resolution
 - `src/rules/` – rule file discovery (shared by envelope and session hints)
 - `tools/` – tool implementations and descriptions (see `tools/README.md`)
@@ -76,6 +77,8 @@ The full Cursor-styled tool list exposed by the extension:
 - `ReadFile` – read file content with pagination
 - `Delete` – delete files or directories
 - `SemanticSearch` – semantic search by intent
+- `memory_search` – search indexed memory snippets
+- `memory_get` – read a snippet from memory files
 - `WebSearch` – search the web with snippets
 - `WebFetch` – fetch and render web content
 - `AskQuestion` – collect structured multiple-choice answers
@@ -103,6 +106,10 @@ When the same filename exists in both, the project rule wins. Each file becomes 
 - The user message envelope issues a lightweight MCP server `initialize` request to collect server instructions.
 - MCP tools then progressively load and surface resources, schemas, and execution only when needed.
 - MCP configs are loaded from `.pi/mcp.json` (project) and `~/.pi/mcp.json` (user); project entries take precedence on name conflicts.
+
+## Memory search
+
+- Builtin memory search reads `~/.mono-pilot/config.json` (`memorySearch` field). If missing, defaults are used.
 
 ## Local development
 

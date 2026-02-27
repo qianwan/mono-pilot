@@ -24,6 +24,10 @@ import lspSymbolsExtension from "../../tools/lsp-symbols.js";
 import { LSP } from "../lsp/index.js";
 import briefWriteExtension from "../../tools/brief-write.js";
 import { registerSessionMemoryHook } from "../session-memory/hook.js";
+import { warmMemorySearch } from "../memory/warm.js";
+import { deriveAgentId } from "../brief/paths.js";
+import memorySearchExtension from "../../tools/memory-search.js";
+import memoryGetExtension from "../../tools/memory-get.js";
 
 const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
@@ -48,6 +52,8 @@ const toolExtensions: ExtensionFactory[] = [
 	lspDiagnosticsExtension,
 	lspSymbolsExtension,
 	briefWriteExtension,
+	memorySearchExtension,
+	memoryGetExtension,
 ];
 
 export default function monoPilotExtension(pi: ExtensionAPI) {
@@ -59,6 +65,11 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);
+		try {
+			await warmMemorySearch({ workspaceDir: ctx.cwd, agentId: deriveAgentId(ctx.cwd) });
+		} catch (error) {
+			console.warn(`[memory] warm failed: ${String(error)}`);
+		}
 	});
 
 	pi.on("session_compact", async () => {
