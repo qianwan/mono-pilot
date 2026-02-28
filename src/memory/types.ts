@@ -1,6 +1,6 @@
 export type MemorySource = "memory";
 
-export type MemoryScope = "agent" | "all";
+export type MemorySearchScope = "self" | "agent" | "all";
 
 export interface MemorySearchResult {
 	path: string;
@@ -17,6 +17,8 @@ export interface MemorySearchQueryOptions {
 	maxResults?: number;
 	minScore?: number;
 	sessionKey?: string;
+	scope?: MemorySearchScope;
+	targetAgentId?: string;
 }
 
 export interface MemorySearchGetResult {

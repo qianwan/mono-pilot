@@ -4,7 +4,6 @@ import { DEFAULT_LOCAL_MODEL, DEFAULT_MODEL_CACHE_DIR } from "../embeddings/cons
 export const memorySearchDefaults: ResolvedMemorySearchConfig = {
 	enabled: true,
 	provider: "local",
-	scope: "agent",
 	sources: ["memory"],
 	extraPaths: [],
 	local: {
@@ -43,7 +42,7 @@ export const memorySearchDefaults: ResolvedMemorySearchConfig = {
 		onSearch: true,
 		watch: true,
 		watchDebounceMs: 1500,
-		intervalMinutes: 0,
+		intervalMinutes: 10,
 		sessions: {
 			deltaBytes: 100_000,
 			deltaMessages: 50,

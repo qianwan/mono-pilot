@@ -22,8 +22,8 @@ interface MemoryGetDetails {
 
 export default function memoryGetExtension(pi: ExtensionAPI) {
 	pi.registerTool({
-		label: "Memory Get",
-		name: "memory_get",
+		label: "MemoryGet",
+		name: "MemoryGet",
 		description: DESCRIPTION,
 		parameters: memoryGetSchema,
 		execute: async (_toolCallId, params: MemoryGetInput, _signal, _onUpdate, ctx) => {

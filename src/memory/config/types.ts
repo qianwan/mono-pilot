@@ -1,4 +1,4 @@
-import type { MemoryScope, MemorySource } from "../types.js";
+import type { MemorySource } from "../types.js";
 
 export interface MemorySearchChunkingConfig {
 	tokens?: number;
@@ -62,7 +62,6 @@ export interface MemorySearchCacheConfig {
 export interface MemorySearchConfig {
 	enabled?: boolean;
 	provider?: "local";
-	scope?: MemoryScope;
 	sources?: MemorySource[];
 	extraPaths?: string[];
 	local?: MemorySearchLocalConfig;
@@ -76,7 +75,6 @@ export interface MemorySearchConfig {
 export interface ResolvedMemorySearchConfig {
 	enabled: boolean;
 	provider: "local";
-	scope: MemoryScope;
 	sources: MemorySource[];
 	extraPaths: string[];
 	local: {

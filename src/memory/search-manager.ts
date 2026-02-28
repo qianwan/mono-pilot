@@ -11,7 +11,7 @@ export async function getMemorySearchManager(params: {
 	if (!settings.enabled) return null;
 	if (!settings.sources.includes("memory")) return null;
 
-	const key = settings.scope === "all" ? "all" : params.agentId;
+	const key = params.agentId;
 	const cached = managerCache.get(key);
 	if (cached) return cached;
 
@@ -36,8 +36,7 @@ export async function closeMemorySearchManagers(): Promise<void> {
 
 export function peekMemorySearchManager(params: {
 	agentId: string;
-	scope: "agent" | "all";
 }): WorkerMemoryProxy | null {
-	const key = params.scope === "all" ? "all" : params.agentId;
+	const key = params.agentId;
 	return managerCache.get(key) ?? null;
 }

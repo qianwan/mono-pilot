@@ -2,7 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import type { WorkerInitData, WorkerRequest, WorkerOutboundMessage } from "./protocol.js";
 import type { MemorySearchManager } from "../types.js";
 import { MemoryIndexManager } from "../manager/index-manager.js";
-import { MultiAgentMemorySearchManager } from "../manager/multi-agent-manager.js";
+import { memoryLog } from "../log.js";
 
 function post(msg: WorkerOutboundMessage): void {
 	parentPort?.postMessage(msg);
@@ -15,18 +15,12 @@ try {
 	const init = workerData as WorkerInitData;
 	let lastDirty = true;
 
-	if (init.settings.scope === "all") {
-		manager = new MultiAgentMemorySearchManager({
-			workspaceDir: init.workspaceDir,
-			settings: init.settings,
-		});
-	} else {
-		manager = new MemoryIndexManager({
-			agentId: init.agentId,
-			workspaceDir: init.workspaceDir,
-			settings: init.settings,
-		});
-	}
+	manager = new MemoryIndexManager({
+		agentId: init.agentId,
+		workspaceDir: init.workspaceDir,
+		settings: init.settings,
+	});
+	memoryLog.info("worker initialized", { agentId: init.agentId });
 
 	// Periodically broadcast dirty state so the proxy can cache it.
 	const DIRTY_POLL_MS = 2000;
@@ -48,6 +42,7 @@ try {
 	// Initialization failed — let the process crash so the proxy's exit handler fires.
 	const message = err instanceof Error ? err.message : String(err);
 	console.error(`[memory-worker] init failed: ${message}`);
+	memoryLog.error("worker init failed", { error: message });
 	process.exit(1);
 }
 

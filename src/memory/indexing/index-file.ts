@@ -10,6 +10,7 @@ const DEFAULT_MODEL_ID = "fts";
 
 export async function indexMemoryFile(params: {
 	db: DatabaseSync;
+	agentId: string;
 	entry: MemoryFileEntry;
 	source: MemorySource;
 	chunking: { tokens: number; overlap: number };
@@ -31,26 +32,27 @@ export async function indexMemoryFile(params: {
 		try {
 			params.db
 				.prepare(
-					`DELETE FROM ${VECTOR_TABLE} WHERE id IN (SELECT id FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ?)`,
+					`DELETE FROM ${VECTOR_TABLE} WHERE id IN (SELECT id FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?)`,
 				)
-				.run(params.entry.path, params.source);
+				.run(params.entry.path, params.source, params.agentId);
 		} catch {
 			// Ignore vector cleanup errors.
 		}
 	}
-	params.db.prepare(`DELETE FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ?`).run(
-		params.entry.path,
-		params.source,
-	);
 	if (params.ftsAvailable) {
 		try {
 			params.db
-				.prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
-				.run(params.entry.path, params.source, modelId);
+				.prepare(
+					`DELETE FROM ${FTS_TABLE} WHERE id IN (SELECT id FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?)`,
+				)
+				.run(params.entry.path, params.source, params.agentId);
 		} catch {
 			// Ignore FTS cleanup errors.
 		}
 	}
+	params.db
+		.prepare(`DELETE FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?`)
+		.run(params.entry.path, params.source, params.agentId);
 
 	let indexedChunks = chunks;
 	let embeddings: number[][] = indexedChunks.map(() => []);
@@ -77,6 +79,7 @@ export async function indexMemoryFile(params: {
 		if (!chunk) continue;
 		const embedding = embeddings[i] ?? [];
 		const id = buildChunkId({
+			agentId: params.agentId,
 			source: params.source,
 			path: params.entry.path,
 			chunk,
@@ -84,8 +87,8 @@ export async function indexMemoryFile(params: {
 		});
 		params.db
 			.prepare(
-				`INSERT INTO ${CHUNKS_TABLE} (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`INSERT INTO ${CHUNKS_TABLE} (id, path, agent_id, source, start_line, end_line, hash, model, text, embedding, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(id) DO UPDATE SET
 				   hash=excluded.hash,
 				   model=excluded.model,
@@ -96,6 +99,7 @@ export async function indexMemoryFile(params: {
 			.run(
 				id,
 				params.entry.path,
+				params.agentId,
 				params.source,
 				chunk.startLine,
 				chunk.endLine,
@@ -138,13 +142,14 @@ export async function indexMemoryFile(params: {
 }
 
 function buildChunkId(params: {
+	agentId: string;
 	source: MemorySource;
 	path: string;
 	chunk: MemoryChunk;
 	modelId: string;
 }): string {
 	return hashText(
-		`${params.source}:${params.path}:${params.chunk.startLine}:${params.chunk.endLine}:${params.chunk.hash}:${params.modelId}`,
+		`${params.source}:${params.agentId}:${params.path}:${params.chunk.startLine}:${params.chunk.endLine}:${params.chunk.hash}:${params.modelId}`,
 	);
 }
 

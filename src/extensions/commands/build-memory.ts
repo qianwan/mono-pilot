@@ -1,14 +1,13 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { buildMemoryIndex, type BuildMode, type BuildScope } from "../../memory/build-memory.js";
+import { buildMemoryIndex, type BuildMode } from "../../memory/build-memory.js";
 
 type NotifyLevel = "info" | "warning" | "error";
 
-const USAGE = "Usage: /build-memory --mode full|dirty [--scope all]";
+const USAGE = "Usage: /build-memory --mode full|dirty";
 
-function parseArgs(raw: string): { mode?: string; scope?: string; error?: string } {
+function parseArgs(raw: string): { mode?: string; error?: string } {
 	const tokens = raw.trim().split(/\s+/);
 	let mode: string | undefined;
-	let scope: string | undefined;
 
 	for (let i = 0; i < tokens.length; i += 1) {
 		const token = tokens[i];
@@ -23,32 +22,19 @@ function parseArgs(raw: string): { mode?: string; scope?: string; error?: string
 			mode = token.slice("--mode=".length);
 			continue;
 		}
-		if (token === "--scope") {
-			scope = tokens[i + 1];
-			i += 1;
-			continue;
-		}
-		if (token.startsWith("--scope=")) {
-			scope = token.slice("--scope=".length);
-			continue;
-		}
 		return { error: `Unknown argument: ${token}. ${USAGE}` };
 	}
 
-	return { mode, scope };
+	return { mode };
 }
 
 function isValidMode(value: string | undefined): value is BuildMode {
 	return value === "full" || value === "dirty";
 }
 
-function isValidScope(value: string | undefined): value is BuildScope | undefined {
-	return value === undefined || value === "all" || value === "current";
-}
-
 export function registerBuildMemoryCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("build-memory", {
-		description: "Rebuild memory index. --mode full|dirty [--scope all]",
+		description: "Rebuild memory index. --mode full|dirty",
 		handler: async (args, ctx) => {
 			const parsed = parseArgs(args);
 
@@ -62,21 +48,14 @@ export function registerBuildMemoryCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			if (!isValidScope(parsed.scope)) {
-				notify(ctx, `Invalid --scope value. Allowed: all, current. ${USAGE}`, "warning");
-				return;
-			}
-
 			const mode: BuildMode = parsed.mode;
-			const scope: BuildScope = parsed.scope ?? "current";
 
-			notify(ctx, `Building memory index (mode=${mode}, scope=${scope})...`, "info");
+			notify(ctx, `Building memory index (mode=${mode})...`, "info");
 
 			try {
 				const result = await buildMemoryIndex({
 					workspaceDir: ctx.cwd,
 					mode,
-					scope,
 				});
 
 				if (result.ok) {

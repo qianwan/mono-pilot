@@ -37,7 +37,6 @@ export function resolveMemorySearchConfig(
 	return {
 		enabled: overrides.enabled ?? memorySearchDefaults.enabled,
 		provider: overrides.provider ?? memorySearchDefaults.provider,
-		scope: overrides.scope ?? memorySearchDefaults.scope,
 		sources: overrides.sources ? [...overrides.sources] : [...memorySearchDefaults.sources],
 		extraPaths: overrides.extraPaths ? [...overrides.extraPaths] : [...memorySearchDefaults.extraPaths],
 		local: {

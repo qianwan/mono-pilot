@@ -6,10 +6,6 @@ export function getAgentMemoryDir(agentId: string): string {
 	return join(getAgentDir(agentId), "memory");
 }
 
-export function getAgentMemoryIndexPath(agentId: string): string {
-	return join(getAgentMemoryDir(agentId), "index.sqlite");
-}
-
 export async function listAgentIds(): Promise<string[]> {
 	const baseDir = getAllAgentsDir();
 	try {

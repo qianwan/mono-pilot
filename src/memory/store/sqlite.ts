@@ -5,8 +5,11 @@ import { dirname } from "node:path";
 
 const require = createRequire(import.meta.url);
 
+let sqliteWarningPatched = false;
+
 export function requireNodeSqlite(): typeof import("node:sqlite") {
 	try {
+		suppressSqliteExperimentalWarning();
 		return require("node:sqlite") as typeof import("node:sqlite");
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -20,7 +23,9 @@ export function requireNodeSqlite(): typeof import("node:sqlite") {
 export function openSqliteDatabase(path: string, allowExtension = false): DatabaseSync {
 	ensureDir(dirname(path));
 	const { DatabaseSync } = requireNodeSqlite();
-	return new DatabaseSync(path, { allowExtension });
+	const db = new DatabaseSync(path, { allowExtension });
+	configureSqliteConnection(db);
+	return db;
 }
 
 export async function loadSqliteVecExtension(params: {
@@ -52,4 +57,44 @@ function ensureDir(path: string): void {
 	} catch {
 		// Ignore directory creation errors; caller handles downstream failures.
 	}
+}
+
+function configureSqliteConnection(db: DatabaseSync): void {
+	try {
+		db.exec("PRAGMA journal_mode=WAL;");
+	} catch {}
+	try {
+		db.exec("PRAGMA busy_timeout=5000;");
+	} catch {}
+}
+
+function suppressSqliteExperimentalWarning(): void {
+	if (sqliteWarningPatched) return;
+	sqliteWarningPatched = true;
+	const originalEmitWarning = process.emitWarning.bind(process);
+	process.emitWarning = ((warning: unknown, ...args: unknown[]) => {
+		if (isSqliteExperimentalWarning(warning, args)) return;
+		return originalEmitWarning(warning as never, ...(args as never[]));
+	}) as typeof process.emitWarning;
+}
+
+function isSqliteExperimentalWarning(warning: unknown, args: unknown[]): boolean {
+	const message =
+		typeof warning === "string"
+			? warning
+			: warning instanceof Error
+				? warning.message
+				: (warning as { message?: string } | null)?.message;
+	const name =
+		warning instanceof Error
+			? warning.name
+			: (warning as { name?: string } | null)?.name;
+	const type =
+		typeof args[0] === "string"
+			? args[0]
+			: (args[0] as { type?: string } | null)?.type;
+	const warningType = name ?? type;
+	if (warningType !== "ExperimentalWarning") return false;
+	if (!message) return false;
+	return message.includes("SQLite is an experimental feature");
 }

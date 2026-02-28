@@ -7,6 +7,7 @@ export interface HybridSearchResult {
 	endLine: number;
 	score: number;
 	snippet: string;
+	agentId?: string;
 }
 
 export function mergeHybridResults(params: {
@@ -24,6 +25,7 @@ export function mergeHybridResults(params: {
 			snippet: string;
 			vectorScore: number;
 			textScore: number;
+			agentId?: string;
 		}
 	>();
 
@@ -35,6 +37,7 @@ export function mergeHybridResults(params: {
 			snippet: entry.snippet,
 			vectorScore: entry.vectorScore,
 			textScore: 0,
+			agentId: entry.agentId,
 		});
 	}
 
@@ -45,6 +48,9 @@ export function mergeHybridResults(params: {
 			if (!existing.snippet && entry.snippet) {
 				existing.snippet = entry.snippet;
 			}
+			if (!existing.agentId && entry.agentId) {
+				existing.agentId = entry.agentId;
+			}
 		} else {
 			byId.set(entry.id, {
 				path: entry.path,
@@ -53,6 +59,7 @@ export function mergeHybridResults(params: {
 				snippet: entry.snippet,
 				vectorScore: 0,
 				textScore: entry.textScore,
+				agentId: entry.agentId,
 			});
 		}
 	}
@@ -65,5 +72,6 @@ export function mergeHybridResults(params: {
 		endLine: entry.endLine,
 		snippet: entry.snippet,
 		score: entry.vectorScore * vectorWeight + entry.textScore * textWeight,
+		agentId: entry.agentId,
 	}));
 }

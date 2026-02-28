@@ -18,17 +18,20 @@ export function ensureMemoryIndexSchema(params: {
 	`);
 	params.db.exec(`
 		CREATE TABLE IF NOT EXISTS ${FILES_TABLE} (
-			path TEXT PRIMARY KEY,
+			path TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
 			source TEXT NOT NULL DEFAULT 'memory',
 			hash TEXT NOT NULL,
 			mtime INTEGER NOT NULL,
-			size INTEGER NOT NULL
+			size INTEGER NOT NULL,
+			PRIMARY KEY (path, agent_id)
 		);
 	`);
 	params.db.exec(`
 		CREATE TABLE IF NOT EXISTS ${CHUNKS_TABLE} (
 			id TEXT PRIMARY KEY,
 			path TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
 			source TEXT NOT NULL DEFAULT 'memory',
 			start_line INTEGER NOT NULL,
 			end_line INTEGER NOT NULL,
@@ -79,9 +82,13 @@ export function ensureMemoryIndexSchema(params: {
 	}
 
 	ensureColumn(params.db, FILES_TABLE, "source", "TEXT NOT NULL DEFAULT 'memory'");
+	ensureColumn(params.db, FILES_TABLE, "agent_id", "TEXT NOT NULL DEFAULT ''");
 	ensureColumn(params.db, CHUNKS_TABLE, "source", "TEXT NOT NULL DEFAULT 'memory'");
+	ensureColumn(params.db, CHUNKS_TABLE, "agent_id", "TEXT NOT NULL DEFAULT ''");
 	params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_path ON ${CHUNKS_TABLE}(path);`);
 	params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_source ON ${CHUNKS_TABLE}(source);`);
+	params.db.exec(`CREATE INDEX IF NOT EXISTS idx_chunks_agent_id ON ${CHUNKS_TABLE}(agent_id);`);
+	params.db.exec(`CREATE INDEX IF NOT EXISTS idx_files_agent_id ON ${FILES_TABLE}(agent_id);`);
 
 	return { ftsAvailable, ...(ftsError ? { ftsError } : {}) };
 }
@@ -98,3 +105,4 @@ function ensureColumn(
 	}
 	db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
+

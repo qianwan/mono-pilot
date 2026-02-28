@@ -11,6 +11,7 @@ export interface VectorSearchResult {
 	endLine: number;
 	vectorScore: number;
 	snippet: string;
+	agentId?: string;
 }
 
 export async function searchVector(params: {
@@ -19,28 +20,40 @@ export async function searchVector(params: {
 	limit: number;
 	snippetMaxChars: number;
 	model?: string;
+	agentId?: string;
 }): Promise<VectorSearchResult[]> {
 	if (params.queryVec.length === 0 || params.limit <= 0) {
 		return [];
 	}
-	const modelClause = params.model ? " WHERE c.model = ?" : "";
-	const modelParams = params.model ? [params.model] : [];
+	const conditions: string[] = [];
+	const paramsList: Array<string> = [];
+	if (params.model) {
+		conditions.push("c.model = ?");
+		paramsList.push(params.model);
+	}
+	if (params.agentId) {
+		conditions.push("c.agent_id = ?");
+		paramsList.push(params.agentId);
+	}
+	const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
 	const rows = params.db
 		.prepare(
 			`SELECT c.id, c.path, c.start_line, c.end_line, c.text,
+				   c.agent_id as agent_id,
 				   vec_distance_cosine(v.embedding, ?) AS dist
 			 FROM ${VECTOR_TABLE} v
-			 JOIN ${CHUNKS_TABLE} c ON c.id = v.id${modelClause}
+			 JOIN ${CHUNKS_TABLE} c ON c.id = v.id${whereClause}
 			 ORDER BY dist ASC
 			 LIMIT ?`,
 		)
-		.all(vectorToBlob(params.queryVec), ...modelParams, params.limit) as Array<{
+		.all(vectorToBlob(params.queryVec), ...paramsList, params.limit) as Array<{
 			id: string;
 			path: string;
 			start_line: number;
 			end_line: number;
 			text: string;
 			dist: number;
+			agent_id?: string;
 		}>;
 	return rows.map((row) => ({
 		id: row.id,
@@ -49,5 +62,6 @@ export async function searchVector(params: {
 		endLine: row.end_line,
 		vectorScore: 1 - row.dist,
 		snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
+		agentId: row.agent_id,
 	}));
 }
