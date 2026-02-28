@@ -3,7 +3,6 @@ import { loadResolvedMemorySearchConfig } from "./config/loader.js";
 import { closeMemorySearchManagers, peekMemorySearchManager } from "./search-manager.js";
 import { getAgentMemoryIndexPath, listAgentIds } from "./agents-paths.js";
 import { MemoryIndexManager } from "./manager/index-manager.js";
-import { MultiAgentMemorySearchManager } from "./manager/multi-agent-manager.js";
 import { deriveAgentId } from "../brief/paths.js";
 
 export type BuildMode = "full" | "dirty";
@@ -102,8 +101,7 @@ async function buildDirty(params: BuildMemoryParams): Promise<BuildMemoryResult>
 		return { ok: true, message: "Memory index is up to date (not dirty).", agents: [] };
 	}
 
-	// Handle MultiAgentMemorySearchManager with syncDirty
-	if (manager instanceof MultiAgentMemorySearchManager) {
+	if (manager.syncDirty) {
 		const synced = await manager.syncDirty();
 		return {
 			ok: true,
@@ -114,7 +112,6 @@ async function buildDirty(params: BuildMemoryParams): Promise<BuildMemoryResult>
 		};
 	}
 
-	// Single agent MemoryIndexManager
 	if (manager.sync) {
 		await manager.sync({ reason: "build-dirty" });
 	}

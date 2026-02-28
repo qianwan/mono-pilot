@@ -1,14 +1,12 @@
-import type { MemorySearchManager } from "./types.js";
 import { loadResolvedMemorySearchConfig } from "./config/loader.js";
-import { MemoryIndexManager } from "./manager/index-manager.js";
-import { MultiAgentMemorySearchManager } from "./manager/multi-agent-manager.js";
+import { WorkerMemoryProxy } from "./worker/proxy.js";
 
-const managerCache = new Map<string, MemorySearchManager>();
+const managerCache = new Map<string, WorkerMemoryProxy>();
 
 export async function getMemorySearchManager(params: {
 	workspaceDir: string;
 	agentId: string;
-}): Promise<MemorySearchManager | null> {
+}): Promise<WorkerMemoryProxy | null> {
 	const settings = await loadResolvedMemorySearchConfig();
 	if (!settings.enabled) return null;
 	if (!settings.sources.includes("memory")) return null;
@@ -17,17 +15,11 @@ export async function getMemorySearchManager(params: {
 	const cached = managerCache.get(key);
 	if (cached) return cached;
 
-	const manager =
-		settings.scope === "all"
-			? new MultiAgentMemorySearchManager({
-					workspaceDir: params.workspaceDir,
-					settings,
-				})
-			: new MemoryIndexManager({
-					agentId: params.agentId,
-					workspaceDir: params.workspaceDir,
-					settings,
-				});
+	const manager = new WorkerMemoryProxy({
+		agentId: params.agentId,
+		workspaceDir: params.workspaceDir,
+		settings,
+	});
 	managerCache.set(key, manager);
 	return manager;
 }
@@ -45,7 +37,7 @@ export async function closeMemorySearchManagers(): Promise<void> {
 export function peekMemorySearchManager(params: {
 	agentId: string;
 	scope: "agent" | "all";
-}): MemorySearchManager | null {
+}): WorkerMemoryProxy | null {
 	const key = params.scope === "all" ? "all" : params.agentId;
 	return managerCache.get(key) ?? null;
 }

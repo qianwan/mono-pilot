@@ -34,5 +34,6 @@ export interface MemorySearchManager {
 	get(path: string, from?: number, lines?: number): Promise<MemorySearchGetResult>;
 	sync?(opts?: MemorySearchSyncOptions): Promise<void>;
 	isDirty?(): boolean;
+	syncDirty?(): Promise<string[]>;
 	close?(): Promise<void>;
 }
