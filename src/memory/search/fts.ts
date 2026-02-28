@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { FTS_TABLE } from "../store/tables.js";
+import { FTS_TABLE } from "../store/schema.js";
 import { truncateUtf16Safe } from "./text.js";
 
 export interface FtsSearchResult {
@@ -8,6 +8,7 @@ export interface FtsSearchResult {
 	startLine: number;
 	endLine: number;
 	score: number;
+	textScore: number;
 	snippet: string;
 }
 
@@ -33,19 +34,22 @@ export function searchFts(params: {
 	limit: number;
 	minScore: number;
 	snippetMaxChars: number;
+	model?: string;
 }): FtsSearchResult[] {
 	if (params.limit <= 0) return [];
 	const ftsQuery = buildFtsQuery(params.query);
 	if (!ftsQuery) return [];
+	const modelClause = params.model ? " AND model = ?" : "";
+	const modelParams = params.model ? [params.model] : [];
 	const rows = params.db
 		.prepare(
 			`SELECT id, path, start_line, end_line, text, bm25(${FTS_TABLE}) AS rank
 			 FROM ${FTS_TABLE}
-			 WHERE ${FTS_TABLE} MATCH ?
+			 WHERE ${FTS_TABLE} MATCH ?${modelClause}
 			 ORDER BY rank ASC
 			 LIMIT ?`,
 		)
-		.all(ftsQuery, params.limit) as Array<{
+		.all(ftsQuery, ...modelParams, params.limit) as Array<{
 			id: string;
 			path: string;
 			start_line: number;
@@ -56,13 +60,14 @@ export function searchFts(params: {
 
 	return rows
 		.map((row) => {
-			const score = bm25RankToScore(row.rank);
+			const textScore = bm25RankToScore(row.rank);
 			return {
 				id: row.id,
 				path: row.path,
 				startLine: row.start_line,
 				endLine: row.end_line,
-				score,
+				score: textScore,
+				textScore,
 				snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
 			};
 		})

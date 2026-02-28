@@ -40,21 +40,55 @@ export interface MemorySearchSyncConfig {
 	sessions?: MemorySearchSyncSessionsConfig;
 }
 
+export interface MemorySearchLocalConfig {
+	modelPath?: string;
+	modelCacheDir?: string;
+}
+
+export interface MemorySearchVectorConfig {
+	enabled?: boolean;
+	extensionPath?: string;
+}
+
+export interface MemorySearchStoreConfig {
+	vector?: MemorySearchVectorConfig;
+}
+
+export interface MemorySearchCacheConfig {
+	enabled?: boolean;
+	maxEntries?: number;
+}
+
 export interface MemorySearchConfig {
 	enabled?: boolean;
+	provider?: "local";
 	scope?: MemoryScope;
 	sources?: MemorySource[];
 	extraPaths?: string[];
+	local?: MemorySearchLocalConfig;
+	store?: MemorySearchStoreConfig;
 	chunking?: MemorySearchChunkingConfig;
 	query?: MemorySearchQueryConfig;
 	sync?: MemorySearchSyncConfig;
+	cache?: MemorySearchCacheConfig;
 }
 
 export interface ResolvedMemorySearchConfig {
 	enabled: boolean;
+	provider: "local";
 	scope: MemoryScope;
 	sources: MemorySource[];
 	extraPaths: string[];
+	local: {
+		modelPath: string;
+		modelCacheDir?: string;
+	};
+	store: {
+		vector: {
+			enabled: boolean;
+			extensionPath?: string;
+		};
+	};
 	chunking: {
 		tokens: number;
 		overlap: number;
@@ -87,5 +121,9 @@ export interface ResolvedMemorySearchConfig {
 			deltaBytes: number;
 			deltaMessages: number;
 		};
+	};
+	cache: {
+		enabled: boolean;
+		maxEntries?: number;
 	};
 }

@@ -52,6 +52,17 @@ function shouldSkipUserText(text: string): boolean {
 	return text.trim().startsWith("/");
 }
 
+const USER_QUERY_OPEN = "<user_query>";
+const USER_QUERY_CLOSE = "</user_query>";
+
+function extractUserQuery(text: string): string | undefined {
+	const start = text.indexOf(USER_QUERY_OPEN);
+	const end = text.lastIndexOf(USER_QUERY_CLOSE);
+	if (start === -1 || end === -1 || end <= start) return undefined;
+	const extracted = text.slice(start + USER_QUERY_OPEN.length, end).trim();
+	return extracted.length > 0 ? extracted : undefined;
+}
+
 export async function readSessionExcerpt(
 	sessionFile: string,
 	maxMessages: number,
@@ -81,9 +92,14 @@ export async function readSessionExcerpt(
 		if (role !== "user" && role !== "assistant") continue;
 		const text = extractTextContent(entry.message.content ?? "");
 		if (!text) continue;
-		const normalized = text.trim();
+		let normalized = text.trim();
 		if (!normalized) continue;
-		if (role === "user" && shouldSkipUserText(normalized)) continue;
+		if (role === "user") {
+			const extracted = extractUserQuery(normalized);
+			if (!extracted) continue;
+			if (shouldSkipUserText(extracted)) continue;
+			normalized = extracted;
+		}
 
 		result.messages.push({ role, text: normalized });
 		if (result.messages.length > maxMessages) {

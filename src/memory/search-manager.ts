@@ -31,3 +31,21 @@ export async function getMemorySearchManager(params: {
 	managerCache.set(key, manager);
 	return manager;
 }
+
+export async function closeMemorySearchManagers(): Promise<void> {
+	const managers = Array.from(managerCache.values());
+	managerCache.clear();
+	for (const manager of managers) {
+		if (manager.close) {
+			await manager.close();
+		}
+	}
+}
+
+export function peekMemorySearchManager(params: {
+	agentId: string;
+	scope: "agent" | "all";
+}): MemorySearchManager | null {
+	const key = params.scope === "all" ? "all" : params.agentId;
+	return managerCache.get(key) ?? null;
+}

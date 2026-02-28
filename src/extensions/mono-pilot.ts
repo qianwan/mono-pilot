@@ -24,10 +24,12 @@ import lspSymbolsExtension from "../../tools/lsp-symbols.js";
 import { LSP } from "../lsp/index.js";
 import briefWriteExtension from "../../tools/brief-write.js";
 import { registerSessionMemoryHook } from "../session-memory/hook.js";
+import { closeMemorySearchManagers } from "../memory/search-manager.js";
 import { warmMemorySearch } from "../memory/warm.js";
 import { deriveAgentId } from "../brief/paths.js";
 import memorySearchExtension from "../../tools/memory-search.js";
 import memoryGetExtension from "../../tools/memory-get.js";
+import { registerBuildMemoryCommand } from "./commands/build-memory.js";
 
 const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
@@ -62,6 +64,7 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	}
 
 	registerSessionMemoryHook(pi);
+	registerBuildMemoryCommand(pi);
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);
@@ -74,5 +77,13 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	pi.on("session_compact", async () => {
 		onCompaction();
+	});
+
+	pi.on("session_shutdown", async () => {
+		try {
+			await closeMemorySearchManagers();
+		} catch (error) {
+			console.warn(`[memory] shutdown cleanup failed: ${String(error)}`);
+		}
 	});
 }

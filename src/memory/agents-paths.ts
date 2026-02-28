@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { getAgentDir, getAllAgentsDir } from "../../brief/paths.js";
+import { getAgentDir, getAllAgentsDir } from "../brief/paths.js";
 
 export function getAgentMemoryDir(agentId: string): string {
 	return join(getAgentDir(agentId), "memory");

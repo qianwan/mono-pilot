@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { ResolvedMemorySearchConfig } from "../config/types.js";
 import type { MemorySearchManager, MemorySearchQueryOptions, MemorySearchResult } from "../types.js";
-import { listAgentIds } from "../agents/paths.js";
+import { listAgentIds } from "../agents-paths.js";
 import { MemoryIndexManager } from "./index-manager.js";
 
 export class MultiAgentMemorySearchManager implements MemorySearchManager {
@@ -60,6 +60,24 @@ export class MultiAgentMemorySearchManager implements MemorySearchManager {
 		for (const manager of managers) {
 			await manager.close();
 		}
+	}
+
+	isDirty(): boolean {
+		for (const manager of this.managers.values()) {
+			if (manager.isDirty()) return true;
+		}
+		return false;
+	}
+
+	async syncDirty(): Promise<string[]> {
+		const synced: string[] = [];
+		for (const [agentId, manager] of this.managers.entries()) {
+			if (manager.isDirty()) {
+				await manager.sync({ reason: "build-dirty" });
+				synced.push(agentId);
+			}
+		}
+		return synced;
 	}
 
 	private getOrCreateManager(agentId: string): MemoryIndexManager {

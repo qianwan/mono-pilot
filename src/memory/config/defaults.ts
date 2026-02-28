@@ -1,10 +1,21 @@
 import type { ResolvedMemorySearchConfig } from "./types.js";
+import { DEFAULT_LOCAL_MODEL, DEFAULT_MODEL_CACHE_DIR } from "../embeddings/constants.js";
 
 export const memorySearchDefaults: ResolvedMemorySearchConfig = {
 	enabled: true,
+	provider: "local",
 	scope: "agent",
 	sources: ["memory"],
 	extraPaths: [],
+	local: {
+		modelPath: DEFAULT_LOCAL_MODEL,
+		modelCacheDir: DEFAULT_MODEL_CACHE_DIR,
+	},
+	store: {
+		vector: {
+			enabled: true,
+		},
+	},
 	chunking: {
 		tokens: 400,
 		overlap: 80,
@@ -37,5 +48,8 @@ export const memorySearchDefaults: ResolvedMemorySearchConfig = {
 			deltaBytes: 100_000,
 			deltaMessages: 50,
 		},
+	},
+	cache: {
+		enabled: true,
 	},
 };

@@ -1,5 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
-import { CHUNKS_TABLE, EMBEDDING_CACHE_TABLE, FILES_TABLE, FTS_TABLE } from "./tables.js";
+
+export const FILES_TABLE = "files";
+export const CHUNKS_TABLE = "chunks";
+export const FTS_TABLE = "chunks_fts";
+export const EMBEDDING_CACHE_TABLE = "embedding_cache";
+export const VECTOR_TABLE = "chunks_vec";
 
 export function ensureMemoryIndexSchema(params: {
 	db: DatabaseSync;

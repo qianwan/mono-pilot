@@ -30,12 +30,26 @@ export function resolveMemorySearchConfig(
 	const hybrid = query?.hybrid;
 	const sync = overrides.sync;
 	const sessions = sync?.sessions;
+	const store = overrides.store;
+	const vector = store?.vector;
+	const cache = overrides.cache;
 
 	return {
 		enabled: overrides.enabled ?? memorySearchDefaults.enabled,
+		provider: overrides.provider ?? memorySearchDefaults.provider,
 		scope: overrides.scope ?? memorySearchDefaults.scope,
 		sources: overrides.sources ? [...overrides.sources] : [...memorySearchDefaults.sources],
 		extraPaths: overrides.extraPaths ? [...overrides.extraPaths] : [...memorySearchDefaults.extraPaths],
+		local: {
+			modelPath: overrides.local?.modelPath ?? memorySearchDefaults.local.modelPath,
+			modelCacheDir: overrides.local?.modelCacheDir ?? memorySearchDefaults.local.modelCacheDir,
+		},
+		store: {
+			vector: {
+				enabled: vector?.enabled ?? memorySearchDefaults.store.vector.enabled,
+				extensionPath: vector?.extensionPath ?? memorySearchDefaults.store.vector.extensionPath,
+			},
+		},
 		chunking: {
 			tokens: chunking?.tokens ?? memorySearchDefaults.chunking.tokens,
 			overlap: chunking?.overlap ?? memorySearchDefaults.chunking.overlap,
@@ -73,6 +87,10 @@ export function resolveMemorySearchConfig(
 				deltaBytes: sessions?.deltaBytes ?? memorySearchDefaults.sync.sessions.deltaBytes,
 				deltaMessages: sessions?.deltaMessages ?? memorySearchDefaults.sync.sessions.deltaMessages,
 			},
+		},
+		cache: {
+			enabled: cache?.enabled ?? memorySearchDefaults.cache.enabled,
+			maxEntries: cache?.maxEntries ?? memorySearchDefaults.cache.maxEntries,
 		},
 	};
 }
