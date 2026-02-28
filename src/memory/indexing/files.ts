@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isFileMissingError } from "./fs-utils.js";
+
+function isFileMissingError(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException)?.code === "ENOENT";
+}
 
 export interface MemoryFileEntry {
 	path: string;
