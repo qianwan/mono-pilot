@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { deriveAgentId, resolveBriefPath } from "../src/brief/paths.js";
 import { countBodyLines, parseFrontmatter, serializeWithFrontmatter } from "../src/brief/frontmatter.js";
@@ -39,6 +40,48 @@ export default function (pi: ExtensionAPI) {
 		label: "BriefWrite",
 		description: DESCRIPTION,
 		parameters: briefWriteSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<BriefWriteInput>;
+			const pathArg = typeof input.path === "string" && input.path.trim().length > 0
+				? input.path
+				: "(missing path)";
+			const mode = input.mode ?? "overwrite";
+
+			let text = theme.fg("toolTitle", theme.bold("BriefWrite"));
+			text += ` ${theme.fg("toolOutput", `${pathArg} (${mode})`)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Writing..."), 0, 0);
+			}
+
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock) {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+
+			const statusLine = textBlock.text;
+			const details = result.details as Record<string, unknown> | undefined;
+			const body = typeof details?.body === "string" ? details.body : undefined;
+
+			if (!expanded) {
+				const summary = `${statusLine} (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
+			}
+
+			let text = theme.fg("toolOutput", statusLine);
+			if (body) {
+				text += "\n" + body
+				.split("\n")
+				.map((line: string) => theme.fg("toolOutput", line))
+				.join("\n");
+			}
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
+			return new Text(text, 0, 0);
+		},
 		async execute(_toolCallId, params: BriefWriteInput, _signal, _onUpdate, ctx) {
 			const agentId = deriveAgentId(ctx.cwd);
 			const writeMode = params.mode ?? "overwrite";
@@ -82,8 +125,8 @@ export default function (pi: ExtensionAPI) {
 				mkdirSync(dir, { recursive: true });
 				writeFileSync(filePath, serializeWithFrontmatter(frontmatter, newBody), "utf-8");
 				return {
-					content: [{ type: "text", text: `Written ${lineCount} lines to ${params.path} (agent: ${agentId})` }],
-					details: { status: "ok", path: params.path, agentId, lineCount },
+					content: [{ type: "text", text: `Written ${lineCount} lines to ${params.path}` }],
+					details: { status: "ok", path: params.path, agentId, lineCount, body: newBody },
 				};
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

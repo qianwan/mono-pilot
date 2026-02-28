@@ -3,8 +3,10 @@ import {
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
 	formatSize,
+	keyHint,
 	truncateTail,
 } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 
 const DESCRIPTION = "Search web for real-time info on any topic; use for up-to-date facts not in training data, like current events or tech updates. Results include snippets and URLs.";
@@ -250,6 +252,35 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 		label: "WebSearch",
 		description: DESCRIPTION,
 		parameters: webSearchSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<WebSearchInput>;
+			const term = typeof input.search_term === "string" && input.search_term.trim().length > 0 ? input.search_term.trim() : "(missing search_term)";
+			const displayTerm = term.length > 120 ? `${term.slice(0, 119)}…` : term;
+			let text = theme.fg("toolTitle", theme.bold("WebSearch"));
+			text += ` ${theme.fg("toolOutput", displayTerm)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Searching..."), 0, 0);
+			}
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock) {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+			const fullText = textBlock.text;
+			const details = result.details as WebSearchDetails | undefined;
+			const count = details?.result_count ?? 0;
+			if (!expanded) {
+				const summary = `${count} results (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
+			}
+			let text = fullText.split("\n").map((line: string) => theme.fg("toolOutput", line)).join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
+			return new Text(text, 0, 0);
+		},
 		async execute(_toolCallId, params: WebSearchInput, signal) {
 			const query = normalizeSearchTerm(params.search_term);
 			if (query.length === 0) {

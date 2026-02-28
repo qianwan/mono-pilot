@@ -1,4 +1,4 @@
-Use this tool to edit files.
+Use this tool to edit files. Patch path must be absolute.
 Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high-level envelope:
 
 *** Begin Patch

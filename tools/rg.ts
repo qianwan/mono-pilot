@@ -392,24 +392,6 @@ function shellQuoteArg(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function getCollapsedResultText(text: string, expanded: boolean): { output: string; remaining: number } {
-	if (text.length === 0) {
-		return { output: text, remaining: 0 };
-	}
-
-	const lines = text.split("\n");
-	// Use 20 lines as the standard collapse threshold
-	const MAX_COLLAPSED_RESULT_LINES = 20;
-
-	if (expanded || lines.length <= MAX_COLLAPSED_RESULT_LINES) {
-		return { output: text, remaining: 0 };
-	}
-
-	return {
-		output: lines.slice(0, MAX_COLLAPSED_RESULT_LINES).join("\n"),
-		remaining: lines.length - MAX_COLLAPSED_RESULT_LINES,
-	};
-}
 
 export const __test__ = {
 	applyPagination,
@@ -478,18 +460,22 @@ export default function (pi: ExtensionAPI) {
 				return new Text(theme.fg("error", "No text result returned."), 0, 0);
 			}
 
-			const { output, remaining } = getCollapsedResultText(textBlock.text, expanded);
-			const isErrorResult = (result as any).isError === true || (result.details as any)?.is_error === true;
+			const fullText = textBlock.text;
+			const lineCount = fullText.split("\n").length;
+			const details = result.details as RgToolDetails | undefined;
+			const matchCount = details?.returned_entries ?? lineCount;
 
-			let text = output
-				.split("\n")
-				.map((line) => (isErrorResult ? theme.fg("error", line) : theme.fg("toolOutput", line)))
-				.join("\n");
-
-			if (!expanded && remaining > 0) {
-				text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
+			if (!expanded) {
+				const summary = `${matchCount} matches, ${lineCount} lines (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
 			}
 
+			const isErrorResult = (result as any).isError === true || (result.details as any)?.is_error === true;
+			let text = fullText
+				.split("\n")
+				.map((line: string) => (isErrorResult ? theme.fg("error", line) : theme.fg("toolOutput", line)))
+				.join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
 			return new Text(text, 0, 0);
 		},
 		async execute(_toolCallId, params: RgInput, signal, _onUpdate, ctx) {

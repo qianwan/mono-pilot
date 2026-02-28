@@ -5,8 +5,10 @@ import {
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
 	formatSize,
+	keyHint,
 	truncateTail,
 } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 
 const DESCRIPTION = `Fetch content from a specified URL and return its contents in a readable markdown format. Use this tool when you need to retrieve and analyze web content.
@@ -295,6 +297,34 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 		label: "WebFetch",
 		description: DESCRIPTION,
 		parameters: webFetchSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<WebFetchInput>;
+			const url = typeof input.url === "string" && input.url.trim().length > 0 ? input.url.trim() : "(missing url)";
+			const displayUrl = url.length > 120 ? `${url.slice(0, 119)}…` : url;
+			let text = theme.fg("toolTitle", theme.bold("WebFetch"));
+			text += ` ${theme.fg("toolOutput", displayUrl)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Fetching URL..."), 0, 0);
+			}
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock) {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+			const fullText = textBlock.text;
+			const lineCount = fullText.split("\n").length;
+			if (!expanded) {
+				const summary = `${lineCount} lines (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
+			}
+			let text = fullText.split("\n").map((line: string) => theme.fg("toolOutput", line)).join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
+			return new Text(text, 0, 0);
+		},
 		async execute(_toolCallId, params: WebFetchInput, signal) {
 			let parsedUrl: URL;
 			try {

@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { McpServerError, resolveTargetServer, type TargetServer } from "../src/mcp/servers.js";
 import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
@@ -119,6 +120,34 @@ export default function fetchMcpResourceExtension(pi: ExtensionAPI) {
 		label: "FetchMcpResource",
 		description: DESCRIPTION,
 		parameters: fetchMcpResourceSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<FetchMcpResourceInput>;
+			const server = typeof input.server === "string" && input.server.trim().length > 0 ? input.server : "(missing server)";
+			const uri = typeof input.uri === "string" && input.uri.trim().length > 0 ? input.uri : "(missing uri)";
+			let text = theme.fg("toolTitle", theme.bold("FetchMcpResource"));
+			text += ` ${theme.fg("toolOutput", `${server} :: ${uri}`)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Fetching resource..."), 0, 0);
+			}
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock) {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+			const fullText = textBlock.text;
+			const lineCount = fullText.split("\n").length;
+			if (!expanded) {
+				const summary = `${lineCount} lines (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
+			}
+			let text = fullText.split("\n").map((line: string) => theme.fg("toolOutput", line)).join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
+			return new Text(text, 0, 0);
+		},
 		async execute(toolCallId, params: FetchMcpResourceInput, signal, _onUpdate, ctx) {
 			let serverName: string;
 			let uri: string;

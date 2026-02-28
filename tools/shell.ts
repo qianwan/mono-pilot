@@ -32,7 +32,7 @@ const DEFAULT_BLOCK_UNTIL_MS = 30_000;
 const UPDATE_RUNNING_SECONDS_EVERY_MS = 5_000;
 const OUTPUT_CAPTURE_LIMIT_BYTES = DEFAULT_MAX_BYTES * 2;
 const MAX_RENDER_COMMAND_CHARS = 180;
-const MAX_COLLAPSED_RESULT_LINES = 5;
+
 const DESCRIPTION = readFileSync(fileURLToPath(new URL("./shell-description.md", import.meta.url)), "utf-8").trim();
 
 const shellSchema = Type.Object({
@@ -152,23 +152,6 @@ function parseEnvSnapshot(snapshot: Buffer): NodeJS.ProcessEnv {
 	return parsed;
 }
 
-function getCollapsedResultText(text: string, expanded: boolean): { output: string; remaining: number } {
-	if (text.length === 0) {
-		return { output: text, remaining: 0 };
-	}
-
-	const lines = text.split("\n");
-	if (expanded || lines.length <= MAX_COLLAPSED_RESULT_LINES) {
-		return { output: text, remaining: 0 };
-	}
-
-	// Show the *last* 20 lines for shell output (tail), since errors and final output usually appear at the end.
-	// For backgrounded or partial it's fine, but typically we want the end of the log.
-	return {
-		output: lines.slice(-MAX_COLLAPSED_RESULT_LINES).join("\n"),
-		remaining: lines.length - MAX_COLLAPSED_RESULT_LINES,
-	};
-}
 
 function updateRunningSecondsInHeader(session: TerminalSession): void {
 	const runningSeconds = Math.floor((Date.now() - session.startedAtMs) / 1000);
@@ -531,17 +514,22 @@ export default function (pi: ExtensionAPI) {
 				return new Text("", 0, 0);
 			}
 
-			const { output, remaining } = getCollapsedResultText(textBlock.text, expanded);
-			let text = output
-				.split("\n")
-				.map((line) => theme.fg("toolOutput", line))
-				.join("\n");
+			const fullText = textBlock.text;
+			const lineCount = fullText.split("\n").length;
+			const details = result.details as Record<string, unknown> | undefined;
+			const exitCode = details?.exit_code as number | null | undefined;
+			const exitInfo = exitCode != null && exitCode !== 0 ? `, exit ${exitCode}` : "";
 
-			if (!expanded && remaining > 0) {
-				// Since we tail the output, the remaining lines are *before* the shown ones.
-				text = `${theme.fg("muted", `(... ${remaining} earlier lines, ${keyHint("expandTools", "to expand")})`)}\n${text}`;
+			if (!expanded) {
+				const summary = `${lineCount} lines${exitInfo} (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg(exitCode != null && exitCode !== 0 ? "error" : "muted", summary), 0, 0);
 			}
 
+			let text = fullText
+				.split("\n")
+				.map((line: string) => theme.fg("toolOutput", line))
+				.join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
 			return new Text(text, 0, 0);
 		},
 		async execute(_toolCallId, params: ShellInput, signal, _onUpdate, ctx) {

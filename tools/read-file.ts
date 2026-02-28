@@ -23,7 +23,7 @@ PDF Support:
 - PDF files are converted into text content automatically (subject to the same character limits as other files).`;
 
 const MAX_RENDER_PATH_CHARS = 120;
-const MAX_COLLAPSED_RESULT_LINES = 5;
+
 
 const readSchema = Type.Object({
 	path: Type.String({ description: "The absolute path of the file to read." }),
@@ -134,21 +134,6 @@ function prefixLineNumbers(text: string, startLine: number, details: ReadToolDet
 	return notice ? `${numberedText}\n\n${notice}` : numberedText;
 }
 
-function getCollapsedResultText(text: string, expanded: boolean): { output: string; remaining: number } {
-	if (text.length === 0) {
-		return { output: text, remaining: 0 };
-	}
-
-	const lines = text.split("\n");
-	if (expanded || lines.length <= MAX_COLLAPSED_RESULT_LINES) {
-		return { output: text, remaining: 0 };
-	}
-
-	return {
-		output: lines.slice(0, MAX_COLLAPSED_RESULT_LINES).join("\n"),
-		remaining: lines.length - MAX_COLLAPSED_RESULT_LINES,
-	};
-}
 
 export default function (pi: ExtensionAPI) {
 	// System prompt injection is handled centrally by system-prompt extension.
@@ -187,16 +172,19 @@ export default function (pi: ExtensionAPI) {
 				return new Text("", 0, 0);
 			}
 
-			const { output, remaining } = getCollapsedResultText(textContent.text, expanded);
-			let text = output
-				.split("\n")
-				.map((line) => theme.fg("toolOutput", line))
-				.join("\n");
+			const fullText = textContent.text;
+			const lineCount = fullText.split("\n").length;
 
-			if (!expanded && remaining > 0) {
-				text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
+			if (!expanded) {
+				const summary = `${lineCount} lines (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
 			}
 
+			let text = fullText
+				.split("\n")
+				.map((line: string) => theme.fg("toolOutput", line))
+				.join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
 			return new Text(text, 0, 0);
 		},
 

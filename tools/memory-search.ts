@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { deriveAgentId } from "../src/brief/paths.js";
@@ -89,6 +89,34 @@ export default function memorySearchExtension(pi: ExtensionAPI) {
 
 			let text = theme.fg("toolTitle", theme.bold("MemorySearch"));
 			text += ` ${theme.fg("toolOutput", commandText)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Searching..."), 0, 0);
+			}
+
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock || typeof textBlock.text !== "string") {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+
+			const fullText = textBlock.text;
+			const details = result.details as MemorySearchDetails | undefined;
+			const resultCount = details?.resultCount ?? 0;
+
+			if (!expanded) {
+				const summary = `${resultCount} results (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
+			}
+
+			let text = fullText
+				.split("\n")
+				.map((line: string) => theme.fg("toolOutput", line))
+				.join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
 			return new Text(text, 0, 0);
 		},
 		execute: async (_toolCallId, params: MemorySearchInput, _signal, _onUpdate, ctx) => {

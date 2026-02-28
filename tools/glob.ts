@@ -23,7 +23,7 @@ Tool to search for files matching a glob pattern
 
 const MAX_RENDER_PATH_CHARS = 120;
 const MAX_RENDER_PATTERN_CHARS = 160;
-const MAX_COLLAPSED_RESULT_LINES = 10;
+
 
 const globSchema = Type.Object({
 	target_directory: Type.Optional(
@@ -72,21 +72,6 @@ function shellQuoteArg(value: string): string {
 	return `'${value.replace(/'/g, `"'"'`)}'`;
 }
 
-function getCollapsedResultText(text: string, expanded: boolean): { output: string; remaining: number } {
-	if (text.length === 0) {
-		return { output: text, remaining: 0 };
-	}
-
-	const lines = text.split("\n");
-	if (expanded || lines.length <= MAX_COLLAPSED_RESULT_LINES) {
-		return { output: text, remaining: 0 };
-	}
-
-	return {
-		output: lines.slice(0, MAX_COLLAPSED_RESULT_LINES).join("\n"),
-		remaining: lines.length - MAX_COLLAPSED_RESULT_LINES,
-	};
-}
 
 function normalizeGlobPattern(pattern: string): string {
 	const trimmed = pattern.trim();
@@ -183,16 +168,20 @@ export default function (pi: ExtensionAPI) {
 				return new Text(theme.fg("error", "No text result returned."), 0, 0);
 			}
 
-			const { output, remaining } = getCollapsedResultText(textBlock.text, expanded);
-			let text = output
-				.split("\n")
-				.map((line) => theme.fg("toolOutput", line))
-				.join("\n");
+			const fullText = textBlock.text;
+			const details = result.details as GlobDetails | undefined;
+			const fileCount = details?.returned_matches ?? fullText.split("\n").length;
 
-			if (!expanded && remaining > 0) {
-				text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
+			if (!expanded) {
+				const summary = `${fileCount} files (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
 			}
 
+			let text = fullText
+				.split("\n")
+				.map((line: string) => theme.fg("toolOutput", line))
+				.join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
 			return new Text(text, 0, 0);
 		},
 		async execute(_toolCallId, params: GlobInput, _signal, _onUpdate, ctx) {

@@ -1,4 +1,5 @@
-import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../src/mcp/servers.js";
 import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
@@ -100,6 +101,36 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 		label: "ListMcpTools",
 		description: DESCRIPTION,
 		parameters: listMcpToolsSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<ListMcpToolsInput>;
+			const parts: string[] = [];
+			if (typeof input.server === "string" && input.server.trim()) parts.push(input.server.trim());
+			if (typeof input.toolName === "string" && input.toolName.trim()) parts.push(`tool=${input.toolName.trim()}`);
+			let text = theme.fg("toolTitle", theme.bold("ListMcpTools"));
+			if (parts.length > 0) text += ` ${theme.fg("toolOutput", parts.join(" "))}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Listing tools..."), 0, 0);
+			}
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock) {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+			const fullText = textBlock.text;
+			const details = result.details as ListMcpToolsDetails | undefined;
+			const count = details?.total_tools ?? 0;
+			if (!expanded) {
+				const summary = `${count} tools (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
+			}
+			let text = fullText.split("\n").map((line: string) => theme.fg("toolOutput", line)).join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
+			return new Text(text, 0, 0);
+		},
 		async execute(toolCallId, params: ListMcpToolsInput, signal, _onUpdate, ctx) {
 			const serverFilter = normalizeOptionalString(params.server);
 			const toolNameFilter = normalizeOptionalString(params.toolName);

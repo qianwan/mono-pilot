@@ -1,4 +1,5 @@
-import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../src/mcp/servers.js";
 import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
@@ -102,6 +103,34 @@ export default function listMcpResourcesExtension(pi: ExtensionAPI) {
 		label: "ListMcpResources",
 		description: DESCRIPTION,
 		parameters: listMcpResourcesSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<ListMcpResourcesInput>;
+			const server = typeof input.server === "string" && input.server.trim().length > 0 ? input.server : undefined;
+			let text = theme.fg("toolTitle", theme.bold("ListMcpResources"));
+			if (server) text += ` ${theme.fg("toolOutput", server)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Listing resources..."), 0, 0);
+			}
+			const textBlock = result.content.find(
+				(entry): entry is { type: "text"; text: string } => entry.type === "text" && typeof entry.text === "string",
+			);
+			if (!textBlock) {
+				return new Text(theme.fg("error", "No text result returned."), 0, 0);
+			}
+			const fullText = textBlock.text;
+			const details = result.details as ListMcpResourcesDetails | undefined;
+			const count = details?.total_resources ?? 0;
+			if (!expanded) {
+				const summary = `${count} resources (click or ${keyHint("expandTools", "to expand")})`;
+				return new Text(theme.fg("muted", summary), 0, 0);
+			}
+			let text = fullText.split("\n").map((line: string) => theme.fg("toolOutput", line)).join("\n");
+			text += theme.fg("muted", `\n(click or ${keyHint("expandTools", "to collapse")})`);
+			return new Text(text, 0, 0);
+		},
 		async execute(toolCallId, params: ListMcpResourcesInput, signal, _onUpdate, ctx) {
 			const serverFilter = normalizeOptionalString(params.server);
 
