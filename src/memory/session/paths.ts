@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { getAgentDir } from "../brief/paths.js";
+import { getAgentDir } from "../../brief/paths.js";
 
 export interface SessionTimestampParts {
 	date: string;

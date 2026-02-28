@@ -5,7 +5,7 @@ import type {
 	SessionSwitchEvent,
 	SessionBeforeCompactEvent,
 } from "@mariozechner/pi-coding-agent";
-import { deriveAgentId } from "../brief/paths.js";
+import { deriveAgentId } from "../../brief/paths.js";
 import { buildSessionMemoryEntry, writeSessionMemoryFile } from "./entry.js";
 import { buildContentHashSlug } from "./content-hash.js";
 import { getAgentMemoryDir, buildMemoryFilename, formatSessionTimestampParts } from "./paths.js";
