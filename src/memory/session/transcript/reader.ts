@@ -10,6 +10,7 @@ export interface SessionTranscriptDelta {
 	sessionId?: string;
 	messages: SessionTranscriptMessage[];
 	lastLine: number;
+	deltaBytes: number;
 }
 
 interface SessionMessageEntry {
@@ -72,6 +73,7 @@ export async function readSessionTranscriptDelta(
 	const result: SessionTranscriptDelta = {
 		messages: [],
 		lastLine: fromLineExclusive,
+		deltaBytes: 0,
 	};
 
 	let raw: string;
@@ -90,6 +92,8 @@ export async function readSessionTranscriptDelta(
 			result.lastLine = lineNo;
 			continue;
 		}
+
+		result.deltaBytes += Buffer.byteLength(line, "utf-8") + 1;
 
 		const entry = parseJsonLine(line);
 		if (!entry) {

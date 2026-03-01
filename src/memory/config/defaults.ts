@@ -37,16 +37,18 @@ export const memorySearchDefaults: ResolvedMemorySearchConfig = {
 			},
 		},
 	},
+	flush: {
+		onSessionSwitch: true,
+		onSessionCompact: true,
+		deltaBytes: 100_000,
+		deltaMessages: 50,
+	},
 	sync: {
 		onSessionStart: true,
 		onSearch: true,
 		watch: true,
 		watchDebounceMs: 1500,
 		intervalMinutes: 10,
-		sessions: {
-			deltaBytes: 100_000,
-			deltaMessages: 50,
-		},
 	},
 	cache: {
 		enabled: true,

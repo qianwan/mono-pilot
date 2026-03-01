@@ -26,7 +26,9 @@ export interface MemorySearchQueryConfig {
 	hybrid?: MemorySearchHybridConfig;
 }
 
-export interface MemorySearchSyncSessionsConfig {
+export interface MemorySearchFlushConfig {
+	onSessionSwitch?: boolean;
+	onSessionCompact?: boolean;
 	deltaBytes?: number;
 	deltaMessages?: number;
 }
@@ -37,7 +39,6 @@ export interface MemorySearchSyncConfig {
 	watch?: boolean;
 	watchDebounceMs?: number;
 	intervalMinutes?: number;
-	sessions?: MemorySearchSyncSessionsConfig;
 }
 
 export interface MemorySearchLocalConfig {
@@ -68,6 +69,7 @@ export interface MemorySearchConfig {
 	store?: MemorySearchStoreConfig;
 	chunking?: MemorySearchChunkingConfig;
 	query?: MemorySearchQueryConfig;
+	flush?: MemorySearchFlushConfig;
 	sync?: MemorySearchSyncConfig;
 	cache?: MemorySearchCacheConfig;
 }
@@ -109,16 +111,18 @@ export interface ResolvedMemorySearchConfig {
 			};
 		};
 	};
+	flush: {
+		onSessionSwitch: boolean;
+		onSessionCompact: boolean;
+		deltaBytes: number;
+		deltaMessages: number;
+	};
 	sync: {
 		onSessionStart: boolean;
 		onSearch: boolean;
 		watch: boolean;
 		watchDebounceMs: number;
 		intervalMinutes: number;
-		sessions: {
-			deltaBytes: number;
-			deltaMessages: number;
-		};
 	};
 	cache: {
 		enabled: boolean;

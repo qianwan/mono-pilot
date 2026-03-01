@@ -18,9 +18,11 @@ export function resolveMemorySearchConfig(
 					temporalDecay: { ...memorySearchDefaults.query.hybrid.temporalDecay },
 				},
 			},
+			flush: {
+				...memorySearchDefaults.flush,
+			},
 			sync: {
 				...memorySearchDefaults.sync,
-				sessions: { ...memorySearchDefaults.sync.sessions },
 			},
 		};
 	}
@@ -28,8 +30,8 @@ export function resolveMemorySearchConfig(
 	const chunking = overrides.chunking;
 	const query = overrides.query;
 	const hybrid = query?.hybrid;
+	const flush = overrides.flush;
 	const sync = overrides.sync;
-	const sessions = sync?.sessions;
 	const store = overrides.store;
 	const vector = store?.vector;
 	const cache = overrides.cache;
@@ -76,16 +78,18 @@ export function resolveMemorySearchConfig(
 				},
 			},
 		},
+		flush: {
+			onSessionSwitch: flush?.onSessionSwitch ?? memorySearchDefaults.flush.onSessionSwitch,
+			onSessionCompact: flush?.onSessionCompact ?? memorySearchDefaults.flush.onSessionCompact,
+			deltaBytes: flush?.deltaBytes ?? memorySearchDefaults.flush.deltaBytes,
+			deltaMessages: flush?.deltaMessages ?? memorySearchDefaults.flush.deltaMessages,
+		},
 		sync: {
 			onSessionStart: sync?.onSessionStart ?? memorySearchDefaults.sync.onSessionStart,
 			onSearch: sync?.onSearch ?? memorySearchDefaults.sync.onSearch,
 			watch: sync?.watch ?? memorySearchDefaults.sync.watch,
 			watchDebounceMs: sync?.watchDebounceMs ?? memorySearchDefaults.sync.watchDebounceMs,
 			intervalMinutes: sync?.intervalMinutes ?? memorySearchDefaults.sync.intervalMinutes,
-			sessions: {
-				deltaBytes: sessions?.deltaBytes ?? memorySearchDefaults.sync.sessions.deltaBytes,
-				deltaMessages: sessions?.deltaMessages ?? memorySearchDefaults.sync.sessions.deltaMessages,
-			},
 		},
 		cache: {
 			enabled: cache?.enabled ?? memorySearchDefaults.cache.enabled,
