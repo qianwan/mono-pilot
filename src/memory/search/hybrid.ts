@@ -7,6 +7,7 @@ export interface HybridSearchResult {
 	endLine: number;
 	score: number;
 	snippet: string;
+	source: "memory" | "sessions";
 	agentId?: string;
 }
 
@@ -25,6 +26,7 @@ export function mergeHybridResults(params: {
 			snippet: string;
 			vectorScore: number;
 			textScore: number;
+			source: "memory" | "sessions";
 			agentId?: string;
 		}
 	>();
@@ -37,6 +39,7 @@ export function mergeHybridResults(params: {
 			snippet: entry.snippet,
 			vectorScore: entry.vectorScore,
 			textScore: 0,
+			source: entry.source,
 			agentId: entry.agentId,
 		});
 	}
@@ -59,6 +62,7 @@ export function mergeHybridResults(params: {
 				snippet: entry.snippet,
 				vectorScore: 0,
 				textScore: entry.textScore,
+				source: entry.source,
 				agentId: entry.agentId,
 			});
 		}
@@ -71,6 +75,7 @@ export function mergeHybridResults(params: {
 		startLine: entry.startLine,
 		endLine: entry.endLine,
 		snippet: entry.snippet,
+		source: entry.source,
 		score: entry.vectorScore * vectorWeight + entry.textScore * textWeight,
 		agentId: entry.agentId,
 	}));

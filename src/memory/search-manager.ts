@@ -9,7 +9,7 @@ export async function getMemorySearchManager(params: {
 }): Promise<WorkerMemoryProxy | null> {
 	const settings = await loadResolvedMemorySearchConfig();
 	if (!settings.enabled) return null;
-	if (!settings.sources.includes("memory")) return null;
+	if (!settings.sources.includes("memory") && !settings.sources.includes("sessions")) return null;
 
 	const key = params.agentId;
 	const cached = managerCache.get(key);

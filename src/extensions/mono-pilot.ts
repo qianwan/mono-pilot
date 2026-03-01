@@ -64,7 +64,7 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	}
 
 	registerSessionMemoryHook(pi);
-    registerBuildMemoryCommand(pi);
+	registerBuildMemoryCommand(pi);
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);

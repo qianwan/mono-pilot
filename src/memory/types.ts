@@ -1,4 +1,4 @@
-export type MemorySource = "memory";
+export type MemorySource = "memory" | "sessions";
 
 export type MemorySearchScope = "self" | "agent" | "all";
 

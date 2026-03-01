@@ -11,6 +11,7 @@ export interface VectorSearchResult {
 	endLine: number;
 	vectorScore: number;
 	snippet: string;
+	source: "memory" | "sessions";
 	agentId?: string;
 }
 
@@ -21,6 +22,7 @@ export async function searchVector(params: {
 	snippetMaxChars: number;
 	model?: string;
 	agentId?: string;
+	source?: "memory" | "sessions";
 }): Promise<VectorSearchResult[]> {
 	if (params.queryVec.length === 0 || params.limit <= 0) {
 		return [];
@@ -35,10 +37,15 @@ export async function searchVector(params: {
 		conditions.push("c.agent_id = ?");
 		paramsList.push(params.agentId);
 	}
+	if (params.source) {
+		conditions.push("c.source = ?");
+		paramsList.push(params.source);
+	}
 	const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
 	const rows = params.db
 		.prepare(
 			`SELECT c.id, c.path, c.start_line, c.end_line, c.text,
+				   c.source as source,
 				   c.agent_id as agent_id,
 				   vec_distance_cosine(v.embedding, ?) AS dist
 			 FROM ${VECTOR_TABLE} v
@@ -53,6 +60,7 @@ export async function searchVector(params: {
 			end_line: number;
 			text: string;
 			dist: number;
+			source?: string;
 			agent_id?: string;
 		}>;
 	return rows.map((row) => ({
@@ -62,6 +70,7 @@ export async function searchVector(params: {
 		endLine: row.end_line,
 		vectorScore: 1 - row.dist,
 		snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
+		source: row.source === "sessions" ? "sessions" : "memory",
 		agentId: row.agent_id,
 	}));
 }

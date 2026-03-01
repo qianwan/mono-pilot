@@ -25,8 +25,8 @@ export async function buildMemoryIndex(params: BuildMemoryParams): Promise<Build
 	if (!settings.enabled) {
 		return { ok: false, message: "Memory search is disabled in config.", agents: [] };
 	}
-	if (!settings.sources.includes("memory")) {
-		return { ok: false, message: "Config sources do not include 'memory'.", agents: [] };
+	if (!settings.sources.includes("memory") && !settings.sources.includes("sessions")) {
+		return { ok: false, message: "Config sources do not include 'memory' or 'sessions'.", agents: [] };
 	}
 
 	if (params.mode === "full") {

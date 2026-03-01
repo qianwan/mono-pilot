@@ -1,10 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
 import { readFile } from "node:fs/promises";
+import { relative } from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { MemorySearchManager, MemorySearchQueryOptions, MemorySearchResult } from "../types.js";
 import type { ResolvedMemorySearchConfig } from "../config/types.js";
 import { getAgentMemoryDir } from "../agents-paths.js";
 import { getMemoryIndexPath } from "../paths.js";
+import { getSessionTranscriptsRootDir } from "../session/transcript/paths.js";
 import { memoryLog } from "../log.js";
 import { openSqliteDatabase } from "../store/sqlite.js";
 import { ensureMemoryIndexSchema } from "../store/schema.js";
@@ -26,6 +28,9 @@ export class MemoryIndexManager implements MemorySearchManager {
 	private readonly settings: ResolvedMemorySearchConfig;
 	private readonly db: DatabaseSync;
 	private readonly memoryDir: string;
+	private readonly sessionTranscriptsDir: string;
+	private readonly includeMemorySource: boolean;
+	private readonly includeSessionsSource: boolean;
 	private readonly ftsAvailable: boolean;
 	private provider: EmbeddingProvider | null = null;
 	private providerPromise: Promise<EmbeddingProvider | null> | null = null;
@@ -43,6 +48,9 @@ export class MemoryIndexManager implements MemorySearchManager {
 		this.workspaceDir = params.workspaceDir;
 		this.settings = params.settings;
 		this.memoryDir = getAgentMemoryDir(params.agentId);
+		this.sessionTranscriptsDir = getSessionTranscriptsRootDir(params.agentId);
+		this.includeMemorySource = this.settings.sources.includes("memory");
+		this.includeSessionsSource = this.settings.sources.includes("sessions");
 		this.db = openSqliteDatabase(getMemoryIndexPath(), true);
 		const schema = ensureMemoryIndexSchema({ db: this.db, ftsEnabled: true });
 		this.ftsAvailable = schema.ftsAvailable;
@@ -56,6 +64,9 @@ export class MemoryIndexManager implements MemorySearchManager {
 		memoryLog.info("manager initialized", {
 			agentId: this.agentId,
 			memoryDir: this.memoryDir,
+			sessionTranscriptsDir: this.sessionTranscriptsDir,
+			includeMemorySource: this.includeMemorySource,
+			includeSessionsSource: this.includeSessionsSource,
 			indexPath: getMemoryIndexPath(),
 		});
 	}
@@ -108,14 +119,24 @@ export class MemoryIndexManager implements MemorySearchManager {
 						200,
 						Math.max(1, Math.floor(maxResults * hybrid.candidateMultiplier)),
 					);
-					const vectorResults = await searchVector({
-						db: this.db,
-						queryVec: queryEmbedding,
-						limit: hybrid.enabled ? candidateLimit : maxResults,
-						snippetMaxChars: SNIPPET_MAX_CHARS,
-						model: provider.model,
-						agentId: agentFilter,
-					});
+					const vectorSources: Array<"memory" | "sessions"> = [];
+					if (this.includeMemorySource) vectorSources.push("memory");
+					if (this.includeSessionsSource) vectorSources.push("sessions");
+					const vectorResults = (
+						await Promise.all(
+							vectorSources.map((source) =>
+								searchVector({
+									db: this.db,
+									queryVec: queryEmbedding,
+									limit: hybrid.enabled ? candidateLimit : maxResults,
+									snippetMaxChars: SNIPPET_MAX_CHARS,
+									model: provider.model,
+									agentId: agentFilter,
+									source,
+								}),
+							),
+						)
+					).flat();
 					if (!hybrid.enabled || !this.ftsAvailable) {
 						return finish(
 							vectorResults
@@ -125,7 +146,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 								endLine: row.endLine,
 								score: row.vectorScore,
 								snippet: row.snippet,
-								source: "memory" as const,
+								source: row.source,
 								agentId: resolveAgentId(row.agentId),
 							}))
 							.filter((row) => row.score >= minScore)
@@ -133,15 +154,25 @@ export class MemoryIndexManager implements MemorySearchManager {
 							"vector",
 						);
 					}
-					const keywordResults = searchFts({
-						db: this.db,
-						query: cleaned,
-						limit: candidateLimit,
-						minScore: 0,
-						snippetMaxChars: SNIPPET_MAX_CHARS,
-						model: provider.model,
-						agentId: agentFilter,
-					});
+					const keywordSources: Array<"memory" | "sessions"> = [];
+					if (this.includeMemorySource) keywordSources.push("memory");
+					if (this.includeSessionsSource) keywordSources.push("sessions");
+					const keywordResults = (
+						await Promise.all(
+							keywordSources.map((source) =>
+								Promise.resolve(searchFts({
+									db: this.db,
+									query: cleaned,
+									limit: candidateLimit,
+									minScore: 0,
+									snippetMaxChars: SNIPPET_MAX_CHARS,
+									model: provider.model,
+									agentId: agentFilter,
+									source,
+								})),
+							),
+						)
+					).flat();
 					const merged = mergeHybridResults({
 						vector: vectorResults,
 						keyword: keywordResults,
@@ -159,7 +190,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 							endLine: row.endLine,
 							score: row.score,
 							snippet: row.snippet,
-							source: "memory" as const,
+							source: row.source,
 							agentId: resolveAgentId(row.agentId),
 						})),
 						"hybrid",
@@ -177,15 +208,25 @@ export class MemoryIndexManager implements MemorySearchManager {
 		}
 
 		if (!this.ftsAvailable) return [];
-		const rows = searchFts({
-			db: this.db,
-			query: cleaned,
-			limit: maxResults,
-			minScore,
-			snippetMaxChars: SNIPPET_MAX_CHARS,
-			model: provider?.model,
-			agentId: agentFilter,
-		});
+		const ftsSources: Array<"memory" | "sessions"> = [];
+		if (this.includeMemorySource) ftsSources.push("memory");
+		if (this.includeSessionsSource) ftsSources.push("sessions");
+		const rows = (
+			await Promise.all(
+				ftsSources.map((source) =>
+					Promise.resolve(searchFts({
+						db: this.db,
+						query: cleaned,
+						limit: maxResults,
+						minScore,
+						snippetMaxChars: SNIPPET_MAX_CHARS,
+						model: provider?.model,
+						agentId: agentFilter,
+						source,
+					})),
+				),
+			)
+		).flat();
 		return finish(
 			rows.map((row) => ({
 			path: row.path,
@@ -193,7 +234,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 			endLine: row.endLine,
 			score: row.score,
 			snippet: row.snippet,
-			source: "memory" as const,
+			source: row.source,
 			agentId: resolveAgentId(row.agentId),
 		})),
 			"fts",
@@ -251,6 +292,9 @@ export class MemoryIndexManager implements MemorySearchManager {
 				: undefined;
 			const files = await listMemoryFiles({
 				memoryDir: this.memoryDir,
+				sessionTranscriptsDir: this.sessionTranscriptsDir,
+				includeMemoryDir: this.includeMemorySource,
+				includeSessionTranscriptsDir: this.includeSessionsSource,
 				extraPaths: this.settings.extraPaths,
 				workspaceDir: this.workspaceDir,
 			});
@@ -260,9 +304,11 @@ export class MemoryIndexManager implements MemorySearchManager {
 			const activePaths = new Set(entries.map((entry) => entry.path));
 			let indexed = 0;
 			for (const entry of entries) {
+				const source = this.resolveSourceForPath(entry.path);
+				if (!source) continue;
 				const record = this.db
 					.prepare(`SELECT hash FROM ${FILES_TABLE} WHERE path = ? AND source = ? AND agent_id = ?`)
-					.get(entry.path, "memory", this.agentId) as { hash: string } | undefined;
+					.get(entry.path, source, this.agentId) as { hash: string } | undefined;
 				if (!params?.force && record?.hash === entry.hash) {
 					continue;
 				}
@@ -270,7 +316,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 					db: this.db,
 					agentId: this.agentId,
 					entry,
-					source: "memory",
+					source,
 					chunking: this.settings.chunking,
 					ftsAvailable: this.ftsAvailable,
 					embeddings: embeddingsContext,
@@ -288,44 +334,50 @@ export class MemoryIndexManager implements MemorySearchManager {
 					.run(
 						entry.path,
 						this.agentId,
-						"memory",
+						source,
 						entry.hash,
 						Math.round(entry.mtimeMs),
 						entry.size,
 					);
 			}
 
-			const staleRows = this.db
-				.prepare(`SELECT path FROM ${FILES_TABLE} WHERE source = ? AND agent_id = ?`)
-				.all("memory", this.agentId) as Array<{ path: string }>;
+			const trackedSources: Array<"memory" | "sessions"> = [];
+			if (this.includeMemorySource) trackedSources.push("memory");
+			if (this.includeSessionsSource) trackedSources.push("sessions");
 			let staleDeleted = 0;
-			for (const stale of staleRows) {
-				if (activePaths.has(stale.path)) continue;
-				this.db
-					.prepare(`DELETE FROM ${FILES_TABLE} WHERE path = ? AND source = ? AND agent_id = ?`)
-					.run(stale.path, "memory", this.agentId);
-				if (this.settings.store.vector.enabled) {
-					try {
-						this.db
-							.prepare(
-								`DELETE FROM ${VECTOR_TABLE} WHERE id IN (SELECT id FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?)`,
-							)
-							.run(stale.path, "memory", this.agentId);
-					} catch {}
+			for (const source of trackedSources) {
+				const staleRows = this.db
+					.prepare(`SELECT path FROM ${FILES_TABLE} WHERE source = ? AND agent_id = ?`)
+					.all(source, this.agentId) as Array<{ path: string }>;
+				for (const stale of staleRows) {
+					const staleSource = this.resolveSourceForPath(stale.path) ?? source;
+					if (activePaths.has(stale.path) && staleSource === source) continue;
+					this.db
+						.prepare(`DELETE FROM ${FILES_TABLE} WHERE path = ? AND source = ? AND agent_id = ?`)
+						.run(stale.path, source, this.agentId);
+					if (this.settings.store.vector.enabled) {
+						try {
+							this.db
+								.prepare(
+									`DELETE FROM ${VECTOR_TABLE} WHERE id IN (SELECT id FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?)`,
+								)
+								.run(stale.path, source, this.agentId);
+						} catch {}
+					}
+					if (this.ftsAvailable) {
+						try {
+							this.db
+								.prepare(
+									`DELETE FROM ${FTS_TABLE} WHERE id IN (SELECT id FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?)`,
+								)
+								.run(stale.path, source, this.agentId);
+						} catch {}
+					}
+					this.db
+						.prepare(`DELETE FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?`)
+						.run(stale.path, source, this.agentId);
+					staleDeleted += 1;
 				}
-				if (this.ftsAvailable) {
-					try {
-						this.db
-							.prepare(
-								`DELETE FROM ${FTS_TABLE} WHERE id IN (SELECT id FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?)`,
-							)
-							.run(stale.path, "memory", this.agentId);
-					} catch {}
-				}
-				this.db
-					.prepare(`DELETE FROM ${CHUNKS_TABLE} WHERE path = ? AND source = ? AND agent_id = ?`)
-					.run(stale.path, "memory", this.agentId);
-				staleDeleted += 1;
 			}
 
 			this.dirty = false;
@@ -437,10 +489,16 @@ export class MemoryIndexManager implements MemorySearchManager {
 	private ensureWatcher(): void {
 		if (!this.settings.sync.watch || this.watcher) return;
 		const watchPaths = new Set<string>();
-		watchPaths.add(this.memoryDir);
-		for (const extra of resolveExtraPaths(this.workspaceDir, this.settings.extraPaths)) {
-			watchPaths.add(extra);
+		if (this.includeMemorySource) {
+			watchPaths.add(this.memoryDir);
+			for (const extra of resolveExtraPaths(this.workspaceDir, this.settings.extraPaths)) {
+				watchPaths.add(extra);
+			}
 		}
+		if (this.includeSessionsSource) {
+			watchPaths.add(this.sessionTranscriptsDir);
+		}
+		if (watchPaths.size === 0) return;
 		this.watcher = chokidar.watch(Array.from(watchPaths), {
 			ignoreInitial: true,
 			awaitWriteFinish: {
@@ -472,6 +530,18 @@ export class MemoryIndexManager implements MemorySearchManager {
 				});
 			});
 		}, this.settings.sync.watchDebounceMs);
+	}
+
+	private resolveSourceForPath(absPath: string): "memory" | "sessions" | null {
+		const relativeToSessions = relative(this.sessionTranscriptsDir, absPath);
+		const isSessionTranscript =
+			relativeToSessions.length > 0 &&
+			!relativeToSessions.startsWith("..") &&
+			!relativeToSessions.startsWith(".");
+		if (isSessionTranscript) {
+			return this.includeSessionsSource ? "sessions" : null;
+		}
+		return this.includeMemorySource ? "memory" : null;
 	}
 
 	private ensureIntervalSync(): void {

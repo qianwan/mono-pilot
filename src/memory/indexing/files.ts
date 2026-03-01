@@ -50,6 +50,7 @@ async function walkDir(dir: string, files: string[]): Promise<void> {
 		const full = path.join(dir, entry.name);
 		if (entry.isSymbolicLink()) continue;
 		if (entry.isDirectory()) {
+			if (entry.name === ".state") continue;
 			await walkDir(full, files);
 			continue;
 		}
@@ -60,19 +61,36 @@ async function walkDir(dir: string, files: string[]): Promise<void> {
 }
 
 export async function listMemoryFiles(params: {
-	memoryDir: string;
+	memoryDir?: string;
+	sessionTranscriptsDir?: string;
+	includeMemoryDir?: boolean;
+	includeSessionTranscriptsDir?: boolean;
 	extraPaths?: string[];
 	workspaceDir?: string;
 }): Promise<string[]> {
 	const result: string[] = [];
-	try {
-		const dirStat = await fs.lstat(params.memoryDir);
-		if (!dirStat.isSymbolicLink() && dirStat.isDirectory()) {
-			await walkDir(params.memoryDir, result);
-		}
-	} catch {}
+	if (params.includeMemoryDir !== false && params.memoryDir) {
+		try {
+			const dirStat = await fs.lstat(params.memoryDir);
+			if (!dirStat.isSymbolicLink() && dirStat.isDirectory()) {
+				await walkDir(params.memoryDir, result);
+			}
+		} catch {}
+	}
 
-	const normalizedExtraPaths = resolveExtraPaths(params.workspaceDir, params.extraPaths);
+	if (params.includeSessionTranscriptsDir !== false && params.sessionTranscriptsDir) {
+		try {
+			const transcriptsStat = await fs.lstat(params.sessionTranscriptsDir);
+			if (!transcriptsStat.isSymbolicLink() && transcriptsStat.isDirectory()) {
+				await walkDir(params.sessionTranscriptsDir, result);
+			}
+		} catch {}
+	}
+
+	const normalizedExtraPaths =
+		params.includeMemoryDir === false
+			? []
+			: resolveExtraPaths(params.workspaceDir, params.extraPaths);
 	for (const inputPath of normalizedExtraPaths) {
 		try {
 			const stat = await fs.lstat(inputPath);
