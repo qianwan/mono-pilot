@@ -26,7 +26,7 @@ import briefWriteExtension from "../../tools/brief-write.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
 import { closeMemorySearchManagers } from "../memory/runtime/index.js";
 import { warmMemorySearch } from "../memory/warm.js";
-import { deriveAgentId } from "../brief/paths.js";
+import { deriveAgentId } from "../agents-paths.js";
 import memorySearchExtension from "../../tools/memory-search.js";
 import memoryGetExtension from "../../tools/memory-get.js";
 import { registerBuildMemoryCommand } from "./commands/build-memory.js";

@@ -4,7 +4,7 @@ import { relative } from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { MemorySearchManager, MemorySearchQueryOptions, MemorySearchResult } from "./types.js";
 import type { ResolvedMemorySearchConfig } from "./config/types.js";
-import { getAgentMemoryDir } from "./agents-paths.js";
+import { getAgentMemoryDir } from "../agents-paths.js";
 import { getMemoryIndexPath } from "./paths.js";
 import { getSessionTranscriptsRootDir } from "./session/transcript/paths.js";
 import { memoryLog } from "./log.js";

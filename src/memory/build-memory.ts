@@ -2,7 +2,7 @@ import { loadResolvedMemorySearchConfig } from "./config/loader.js";
 import { closeMemorySearchManagers, peekMemorySearchManager } from "./runtime/index.js";
 import { getMemoryIndexPath } from "./paths.js";
 import { MemoryIndexManager } from "./index-manager.js";
-import { deriveAgentId } from "../brief/paths.js";
+import { deriveAgentId } from "../agents-paths.js";
 import { openSqliteDatabase } from "./store/sqlite.js";
 import { ensureMemoryIndexSchema, CHUNKS_TABLE, FILES_TABLE, FTS_TABLE, VECTOR_TABLE } from "./store/schema.js";
 import { memoryLog } from "./log.js";

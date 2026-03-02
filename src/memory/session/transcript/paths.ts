@@ -1,5 +1,5 @@
 import { basename, extname, join } from "node:path";
-import { getAgentDir } from "../../../brief/paths.js";
+import { getAgentDir } from "../../../agents-paths.js";
 
 const MAX_SESSION_SLUG_CHARS = 80;
 

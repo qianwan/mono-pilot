@@ -6,7 +6,7 @@ import type {
 	TurnEndEvent,
 } from "@mariozechner/pi-coding-agent";
 import { join } from "node:path";
-import { deriveAgentId } from "../../brief/paths.js";
+import { deriveAgentId } from "../../agents-paths.js";
 import { loadResolvedMemorySearchConfig } from "../config/loader.js";
 import { memoryLog } from "../log.js";
 import { evaluateSessionFlushDelta } from "./flush-policy.js";

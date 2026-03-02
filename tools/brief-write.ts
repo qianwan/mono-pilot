@@ -3,7 +3,8 @@ import { dirname } from "node:path";
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { deriveAgentId, resolveBriefPath } from "../src/brief/paths.js";
+import { deriveAgentId } from "../src/agents-paths.js";
+import { resolveBriefPath } from "../src/brief/paths.js";
 import { countBodyLines, parseFrontmatter, serializeWithFrontmatter } from "../src/brief/frontmatter.js";
 
 const DESCRIPTION =

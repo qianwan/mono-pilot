@@ -1,7 +1,7 @@
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { deriveAgentId } from "../src/brief/paths.js";
+import { deriveAgentId } from "../src/agents-paths.js";
 import { getMemorySearchManager } from "../src/memory/runtime/index.js";
 
 const DESCRIPTION =
