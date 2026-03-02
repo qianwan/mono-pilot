@@ -1,9 +1,9 @@
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../src/mcp/servers.js";
-import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
-import { formatErrorMessage, isRecord, toNonEmptyString } from "../src/mcp/config.js";
+import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../mcp/protocol.js";
+import { formatErrorMessage, isRecord, toNonEmptyString } from "../mcp/config.js";
 
 const DESCRIPTION = `List available MCP tools from configured MCP servers. Each returned tool includes server metadata. If server is provided, results are limited to that server. If toolName is provided, returns full documentation and input JSON schema for matching tools.`;
 

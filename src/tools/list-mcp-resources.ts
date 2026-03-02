@@ -1,9 +1,9 @@
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../src/mcp/servers.js";
-import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
-import { formatErrorMessage, isRecord, toNonEmptyString } from "../src/mcp/config.js";
+import { resolveTargetServers, type TargetServer, type McpConfigSource } from "../mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../mcp/protocol.js";
+import { formatErrorMessage, isRecord, toNonEmptyString } from "../mcp/config.js";
 
 const DESCRIPTION = `List available resources from configured MCP servers. Each returned resource will include all standard MCP resource fields plus a 'server' field indicating which server the resource belongs to. MCP resources are _not_ the same as tools, so don't call this function to discover MCP tools.`;
 

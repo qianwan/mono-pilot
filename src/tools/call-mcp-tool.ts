@@ -8,9 +8,9 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { McpServerError, resolveTargetServer, type TargetServer } from "../src/mcp/servers.js";
-import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
-import { formatErrorMessage, getHeaderKeys, isRecord, toBoolean, toNonEmptyString } from "../src/mcp/config.js";
+import { McpServerError, resolveTargetServer, type TargetServer } from "../mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../mcp/protocol.js";
+import { formatErrorMessage, getHeaderKeys, isRecord, toBoolean, toNonEmptyString } from "../mcp/config.js";
 
 const DESCRIPTION = `Call an MCP tool by server identifier and tool name with arbitrary JSON arguments. IMPORTANT: Always read the tool's schema/descriptor BEFORE calling to ensure correct parameters.
 

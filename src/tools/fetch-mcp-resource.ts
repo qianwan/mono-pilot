@@ -3,9 +3,9 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { McpServerError, resolveTargetServer, type TargetServer } from "../src/mcp/servers.js";
-import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../src/mcp/protocol.js";
-import { formatErrorMessage, isRecord, toNonEmptyString } from "../src/mcp/config.js";
+import { McpServerError, resolveTargetServer, type TargetServer } from "../mcp/servers.js";
+import { createRpcRequestId, formatJsonRpcError, initializeMcpSession, postJsonRpcRequest } from "../mcp/protocol.js";
+import { formatErrorMessage, isRecord, toNonEmptyString } from "../mcp/config.js";
 
 const DESCRIPTION = `Reads a specific resource from an MCP server, identified by server name and resource URI. Optionally, set downloadPath (relative to the workspace) to save the resource to disk; when set, the resource will be downloaded and not returned to the model.`;
 

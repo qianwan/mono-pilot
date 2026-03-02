@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type, type Static } from "@sinclair/typebox";
-import { LSP } from "../src/lsp/index.js";
-import { LspState } from "../src/lsp/state.js";
+import { LSP } from "../lsp/index.js";
+import { LspState } from "../lsp/state.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 

@@ -1,7 +1,7 @@
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type, type Static } from "@sinclair/typebox";
-import { LSP } from "../src/lsp/index.js";
+import { LSP } from "../lsp/index.js";
 
 const DESCRIPTION = `Get LSP diagnostics (type errors, warnings, hints) for a specific file.
 

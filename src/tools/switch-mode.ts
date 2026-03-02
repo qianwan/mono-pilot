@@ -8,7 +8,7 @@ import {
 	MODE_STATE_ENTRY_TYPE,
 	parseModeStateEntry,
 	type ModeId,
-} from "../src/extensions/mode-runtime.js";
+} from "../extensions/mode-runtime.js";
 
 const MODE_STATUS_KEY = "mono-pilot-mode";
 

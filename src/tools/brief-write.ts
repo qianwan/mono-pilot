@@ -3,9 +3,9 @@ import { dirname } from "node:path";
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { deriveAgentId } from "../src/agents-paths.js";
-import { resolveBriefPath } from "../src/brief/paths.js";
-import { countBodyLines, parseFrontmatter, serializeWithFrontmatter } from "../src/brief/frontmatter.js";
+import { deriveAgentId } from "../agents-paths.js";
+import { resolveBriefPath } from "../brief/paths.js";
+import { countBodyLines, parseFrontmatter, serializeWithFrontmatter } from "../brief/frontmatter.js";
 
 const DESCRIPTION =
 	"Write content to a brief file in the current agent's brief directory " +

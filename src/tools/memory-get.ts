@@ -1,8 +1,8 @@
 import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
-import { deriveAgentId } from "../src/agents-paths.js";
-import { getMemorySearchManager } from "../src/memory/runtime/index.js";
+import { deriveAgentId } from "../agents-paths.js";
+import { getMemorySearchManager } from "../memory/runtime/index.js";
 
 const DESCRIPTION =
 	"Read a snippet from a memory file returned by memory_search. Supports optional line ranges.";
