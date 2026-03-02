@@ -5,6 +5,7 @@ import globExtension from "../../tools/glob.js";
 import rgExtension from "../../tools/rg.js";
 import readFileExtension from "../../tools/read-file.js";
 import deleteExtension from "../../tools/delete.js";
+import lsExtension from "../../tools/ls.js";
 import semanticSearchExtension from "../../tools/semantic-search.js";
 import webSearchExtension from "../../tools/web-search.js";
 import webFetchExtension from "../../tools/web-fetch.js";
@@ -37,6 +38,7 @@ const toolExtensions: ExtensionFactory[] = [
 	rgExtension,
 	readFileExtension,
 	deleteExtension,
+	lsExtension,
 	semanticSearchExtension,
 	webSearchExtension,
 	webFetchExtension,

@@ -2,6 +2,7 @@ import type { Stats } from "node:fs";
 import { stat, unlink } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 
 // Tool docs are surfaced via system-prompt extension functions namespace.
@@ -48,6 +49,30 @@ export default function (pi: ExtensionAPI) {
 		label: "Delete",
 		description: "Delete file at specified path relative to workspace root; fails gracefully if file doesn't exist, security rejection, or undeletable.",
 		parameters: deleteSchema,
+		renderCall(args, theme) {
+			const input = args as Partial<DeleteInput>;
+			const filePath = typeof input.path === "string" && input.path.trim().length > 0
+				? input.path
+				: "(missing path)";
+			let text = theme.fg("toolTitle", theme.bold("Delete"));
+			text += ` ${theme.fg("toolOutput", filePath)}`;
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("muted", "Deleting..."), 0, 0);
+			}
+			const details = result.details as DeleteDetails | undefined;
+			const status = details?.status ?? "error";
+			const resolvedPath = details?.resolved_path ?? details?.requested_path ?? "";
+			const reason = details?.reason;
+
+			if (status === "deleted") {
+				return new Text(theme.fg("toolOutput", `Deleted ${resolvedPath}`), 0, 0);
+			}
+			const message = reason ?? `${status}: ${resolvedPath}`;
+			return new Text(theme.fg("error", message), 0, 0);
+		},
 		async execute(_toolCallId, params: DeleteInput, _signal, _onUpdate, ctx) {
 			const requestedPath = params.path;
 			let resolvedPath: string;
