@@ -1,12 +1,26 @@
 import { parentPort, workerData } from "node:worker_threads";
 import type { WorkerInitData, WorkerRequest, WorkerOutboundMessage } from "./index.js";
 import type { MemorySearchManager } from "../types.js";
+import type { EmbedFn } from "../index-manager.js";
 import { MemoryIndexManager } from "../index-manager.js";
 import { memoryLog } from "../log.js";
 
 function post(msg: WorkerOutboundMessage): void {
 	parentPort?.postMessage(msg);
 }
+
+// Embed requests are forwarded to main thread via postMessage.
+// Each request gets a unique id; main thread replies with the result.
+let embedNextId = 1;
+const embedPending = new Map<number, { resolve: (v: number[][]) => void; reject: (e: Error) => void }>();
+
+const embedViaMainThread: EmbedFn = (texts) => {
+	const id = embedNextId++;
+	return new Promise((resolve, reject) => {
+		embedPending.set(id, { resolve, reject });
+		post({ type: "embed", id, texts } as any);
+	});
+};
 
 let manager: MemorySearchManager | null = null;
 let dirtyTimer: ReturnType<typeof setInterval> | null = null;
@@ -19,6 +33,8 @@ try {
 		agentId: init.agentId,
 		workspaceDir: init.workspaceDir,
 		settings: init.settings,
+		embedFn: embedViaMainThread,
+		embedModel: init.embedModel,
 	});
 	memoryLog.info("worker initialized", { agentId: init.agentId });
 
@@ -34,6 +50,17 @@ try {
 	dirtyTimer.unref();
 
 	parentPort?.on("message", (msg: WorkerRequest) => {
+		// Embed response from main thread
+		if ((msg as any).type === "embedResult") {
+			const { id, data, error } = msg as any;
+			const pending = embedPending.get(id);
+			if (pending) {
+				embedPending.delete(id);
+				if (error) pending.reject(new Error(error));
+				else pending.resolve(data);
+			}
+			return;
+		}
 		void handleRequest(msg);
 	});
 

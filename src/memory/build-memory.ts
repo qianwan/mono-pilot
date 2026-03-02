@@ -1,5 +1,5 @@
 import { loadResolvedMemorySearchConfig } from "./config/loader.js";
-import { closeMemorySearchManagers, peekMemorySearchManager } from "./runtime/index.js";
+import { closeMemorySearchManagers, peekMemorySearchManager, getDefaultEmbeddingProvider } from "./runtime/index.js";
 import { getMemoryIndexPath } from "./paths.js";
 import { MemoryIndexManager } from "./index-manager.js";
 import { deriveAgentId } from "../agents-paths.js";
@@ -43,6 +43,7 @@ async function buildFull(
 	await closeMemorySearchManagers();
 
 	const agentId = deriveAgentId(params.workspaceDir);
+	const provider = getDefaultEmbeddingProvider();
 	memoryLog.info("build full start", { agentId });
 	await clearAgentPartition(agentId, settings);
 
@@ -50,6 +51,8 @@ async function buildFull(
 		agentId,
 		workspaceDir: params.workspaceDir,
 		settings,
+		embedFn: provider?.embedBatch,
+		embedModel: provider?.model,
 	});
 	try {
 		await manager.sync({ reason: "build-full", force: true });

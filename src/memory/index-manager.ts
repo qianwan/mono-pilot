@@ -17,10 +17,12 @@ import { searchFts } from "./search/fts.js";
 import { searchVector } from "./search/vector.js";
 import { mergeHybridResults } from "./search/hybrid.js";
 import { loadSqliteVecExtension } from "./store/sqlite.js";
-import { createEmbeddingProvider } from "./embeddings/provider.js";
 import type { EmbeddingProvider } from "./embeddings/types.js";
 
 const SNIPPET_MAX_CHARS = 400;
+
+/** External embed function injected from main thread. */
+export type EmbedFn = (texts: string[]) => Promise<number[][]>;
 
 export class MemoryIndexManager implements MemorySearchManager {
 	private readonly agentId: string;
@@ -33,7 +35,6 @@ export class MemoryIndexManager implements MemorySearchManager {
 	private readonly includeSessionsSource: boolean;
 	private readonly ftsAvailable: boolean;
 	private provider: EmbeddingProvider | null = null;
-	private providerPromise: Promise<EmbeddingProvider | null> | null = null;
 	private providerKey: string | null = null;
 	private vectorAvailable: boolean | null = null;
 	private vectorDims?: number;
@@ -43,10 +44,21 @@ export class MemoryIndexManager implements MemorySearchManager {
 	private intervalTimer: NodeJS.Timeout | null = null;
 	private syncInProgress = false;
 
-	constructor(params: { agentId: string; workspaceDir: string; settings: ResolvedMemorySearchConfig }) {
+	private embedFn: EmbedFn | null = null;
+	private embedModel: string | null = null;
+
+	constructor(params: {
+		agentId: string;
+		workspaceDir: string;
+		settings: ResolvedMemorySearchConfig;
+		embedFn?: EmbedFn;
+		embedModel?: string;
+	}) {
 		this.agentId = params.agentId;
 		this.workspaceDir = params.workspaceDir;
 		this.settings = params.settings;
+		this.embedFn = params.embedFn ?? null;
+		this.embedModel = params.embedModel ?? null;
 		this.memoryDir = getAgentMemoryDir(params.agentId);
 		this.sessionTranscriptsDir = getSessionTranscriptsRootDir(params.agentId);
 		this.includeMemorySource = this.settings.sources.includes("memory");
@@ -407,43 +419,27 @@ export class MemoryIndexManager implements MemorySearchManager {
 			void this.watcher.close();
 			this.watcher = null;
 		}
-		if (this.provider?.dispose) {
-			try {
-				await this.provider.dispose();
-			} catch (error) {
-				console.warn(`[memory] embedding provider dispose failed: ${String(error)}`);
-				memoryLog.warn("embedding provider dispose failed", {
-					agentId: this.agentId,
-					error: String(error),
-				});
-			}
-		}
 		this.provider = null;
-		this.providerPromise = null;
 		this.db.close();
 	}
 
 	private async getProvider(): Promise<EmbeddingProvider | null> {
 		if (this.provider) return this.provider;
-		if (this.providerPromise) return await this.providerPromise;
-		this.providerPromise = (async () => {
-			try {
-				const provider = await createEmbeddingProvider(this.settings);
-				this.provider = provider;
-				if (provider) {
-					this.providerKey = hashText(provider.model);
-				}
-				return provider;
-			} catch (error) {
-				console.warn(`[memory] embedding provider unavailable: ${String(error)}`);
-				memoryLog.warn("embedding provider unavailable", {
-					agentId: this.agentId,
-					error: String(error),
-				});
-				return null;
-			}
-		})();
-		return await this.providerPromise;
+		if (!this.embedFn) return null;
+		const embedFn = this.embedFn;
+		const model = this.embedModel ?? "local";
+		const provider: EmbeddingProvider = {
+			id: "local",
+			model,
+			embedQuery: async (text) => {
+				const [vec] = await embedFn([text]);
+				return vec;
+			},
+			embedBatch: embedFn,
+		};
+		this.provider = provider;
+		this.providerKey = hashText(model);
+		return provider;
 	}
 
 	private async ensureVectorReady(dimensions: number): Promise<boolean> {

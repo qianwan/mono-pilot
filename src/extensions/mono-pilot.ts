@@ -25,9 +25,12 @@ import lspSymbolsExtension from "../tools/lsp-symbols.js";
 import { LSP } from "../lsp/index.js";
 import briefWriteExtension from "../tools/brief-write.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
-import { closeMemorySearchManagers } from "../memory/runtime/index.js";
+import { closeMemorySearchManagers, setMemoryWorkersEmbeddingProvider } from "../memory/runtime/index.js";
+import { closeClusterEmbeddingService, getClusterEmbeddingService } from "../cluster/embedding-service.js";
+
 import { warmMemorySearch } from "../memory/warm.js";
 import { deriveAgentId } from "../agents-paths.js";
+import { loadResolvedMemorySearchConfig } from "../memory/config/loader.js";
 import memorySearchExtension from "../tools/memory-search.js";
 import memoryGetExtension from "../tools/memory-get.js";
 import { registerBuildMemoryCommand } from "./commands/build-memory.js";
@@ -70,8 +73,21 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);
-		// Fire-and-forget: don't block session startup on index sync
-		warmMemorySearch({ workspaceDir: ctx.cwd, agentId: deriveAgentId(ctx.cwd) }).catch((error) => {
+		const agentId = deriveAgentId(ctx.cwd);
+		const sessionManager = (ctx as any).sessionManager;
+		// Fire-and-forget: init cluster + warm index without blocking session
+		(async () => {
+			const settings = await loadResolvedMemorySearchConfig();
+			if (settings.enabled && settings.provider === "local") {
+				const service = await getClusterEmbeddingService({
+					...settings.local,
+					agentId,
+					getSessionId: () => sessionManager?.getSessionId?.() ?? "unknown",
+				});
+				setMemoryWorkersEmbeddingProvider(service.provider);
+			}
+			await warmMemorySearch({ workspaceDir: ctx.cwd, agentId });
+		})().catch((error) => {
 			console.warn(`[memory] warm failed: ${String(error)}`);
 		});
 	});
@@ -83,6 +99,7 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		try {
 			await closeMemorySearchManagers();
+			await closeClusterEmbeddingService();
 		} catch (error) {
 			console.warn(`[memory] shutdown cleanup failed: ${String(error)}`);
 		}

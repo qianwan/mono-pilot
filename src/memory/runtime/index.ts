@@ -18,6 +18,7 @@ export interface WorkerInitData {
 	agentId: string;
 	workspaceDir: string;
 	settings: ResolvedMemorySearchConfig;
+	embedModel?: string;
 }
 
 export type WorkerRequest =
@@ -45,6 +46,8 @@ export type WorkerNotification =
 	| { type: "dirty"; value: boolean };
 
 export type WorkerOutboundMessage = WorkerResponse | WorkerNotification;
+
+import type { EmbeddingProvider } from "../embeddings/types.js";
 
 // --- Worker proxy (main thread) ---
 
@@ -74,16 +77,19 @@ class WorkerMemoryProxy implements MemorySearchManager {
 	private ready: Promise<void>;
 
 	private readyReject: ((reason: Error) => void) | null = null;
+	private embeddingProvider: EmbeddingProvider | null = null;
 
 	constructor(params: {
 		agentId: string;
 		workspaceDir: string;
 		settings: ResolvedMemorySearchConfig;
+		embedModel?: string;
 	}) {
 		const initData: WorkerInitData = {
 			agentId: params.agentId,
 			workspaceDir: params.workspaceDir,
 			settings: params.settings,
+			embedModel: params.embedModel,
 		};
 
 		this.worker = new Worker(resolveWorkerPath(), {
@@ -111,6 +117,11 @@ class WorkerMemoryProxy implements MemorySearchManager {
 				return;
 			}
 			if (msg.type === "ready") return;
+			// Embed request from worker — forward to main-thread provider
+			if ((msg as any).type === "embed") {
+				void this.handleEmbedRequest(msg as any);
+				return;
+			}
 			// WorkerResponse
 			const pending = this.pending.get(msg.id);
 			if (!pending) return;
@@ -170,6 +181,27 @@ class WorkerMemoryProxy implements MemorySearchManager {
 		return this.dirty;
 	}
 
+	/** Set the embedding provider used to serve worker embed requests. */
+	setEmbeddingProvider(provider: EmbeddingProvider): void {
+		this.embeddingProvider = provider;
+	}
+
+	private async handleEmbedRequest(req: { id: number; texts: string[] }): Promise<void> {
+		try {
+			if (!this.embeddingProvider) {
+				throw new Error("No embedding provider available");
+			}
+			const data = await this.embeddingProvider.embedBatch(req.texts);
+			this.worker.postMessage({ type: "embedResult", id: req.id, data });
+		} catch (err) {
+			this.worker.postMessage({
+				type: "embedResult",
+				id: req.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
 	async close(): Promise<void> {
 		const CLOSE_TIMEOUT_MS = 3000;
 		try {
@@ -215,6 +247,7 @@ class WorkerMemoryProxy implements MemorySearchManager {
 // --- Singleton registry ---
 
 const managerCache = new Map<string, WorkerMemoryProxy>();
+let defaultEmbeddingProvider: EmbeddingProvider | null = null;
 
 export async function getMemorySearchManager(params: {
 	workspaceDir: string;
@@ -232,7 +265,11 @@ export async function getMemorySearchManager(params: {
 		agentId: params.agentId,
 		workspaceDir: params.workspaceDir,
 		settings,
+		embedModel: defaultEmbeddingProvider?.model,
 	});
+	if (defaultEmbeddingProvider) {
+		manager.setEmbeddingProvider(defaultEmbeddingProvider);
+	}
 	managerCache.set(key, manager);
 	return manager;
 }
@@ -252,4 +289,17 @@ export function peekMemorySearchManager(params: {
 }): WorkerMemoryProxy | null {
 	const key = params.agentId;
 	return managerCache.get(key) ?? null;
+}
+
+/** Set the embedding provider on all active worker proxies. */
+export function setMemoryWorkersEmbeddingProvider(provider: EmbeddingProvider): void {
+	defaultEmbeddingProvider = provider;
+	for (const proxy of managerCache.values()) {
+		proxy.setEmbeddingProvider(provider);
+	}
+}
+
+/** Get the current default embedding provider (if any). */
+export function getDefaultEmbeddingProvider(): EmbeddingProvider | null {
+	return defaultEmbeddingProvider;
 }
