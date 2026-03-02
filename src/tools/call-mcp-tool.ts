@@ -206,10 +206,16 @@ export default function callMcpToolExtension(pi: ExtensionAPI) {
 		description: DESCRIPTION,
 		parameters: callMcpToolSchema,
 		renderCall(args, theme) {
-			const server = typeof args.server === "string" ? args.server : "(missing server)";
-			const toolName = typeof args.toolName === "string" ? args.toolName : "(missing tool)";
+			const input = args as Partial<CallMcpToolInput>;
+			const server = typeof input.server === "string" && input.server.trim() ? input.server.trim() : "(missing server)";
+			const toolName = typeof input.toolName === "string" && input.toolName.trim() ? input.toolName.trim() : "(missing tool)";
+			const commandArgs = [server, toolName];
+			if (input.arguments && typeof input.arguments === "object" && Object.keys(input.arguments).length > 0) {
+				const json = JSON.stringify(input.arguments);
+				commandArgs.push(json.length > 120 ? `${json.slice(0, 119)}…` : json);
+			}
 			let text = theme.fg("toolTitle", theme.bold("CallMcpTool"));
-			text += ` ${theme.fg("toolOutput", `${server} :: ${toolName}`)}`;
+			text += ` ${theme.fg("toolOutput", commandArgs.join(" "))}`;
 			return new Text(text, 0, 0);
 		},
 		renderResult(result, { expanded, isPartial }, theme) {

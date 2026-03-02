@@ -103,11 +103,15 @@ export default function listMcpToolsExtension(pi: ExtensionAPI) {
 		parameters: listMcpToolsSchema,
 		renderCall(args, theme) {
 			const input = args as Partial<ListMcpToolsInput>;
-			const parts: string[] = [];
-			if (typeof input.server === "string" && input.server.trim()) parts.push(input.server.trim());
-			if (typeof input.toolName === "string" && input.toolName.trim()) parts.push(`tool=${input.toolName.trim()}`);
+			const commandArgs: string[] = [];
+			if (typeof input.server === "string" && input.server.trim()) {
+				commandArgs.push("--server", input.server.trim());
+			}
+			if (typeof input.toolName === "string" && input.toolName.trim()) {
+				commandArgs.push("--toolName", input.toolName.trim());
+			}
 			let text = theme.fg("toolTitle", theme.bold("ListMcpTools"));
-			if (parts.length > 0) text += ` ${theme.fg("toolOutput", parts.join(" "))}`;
+			if (commandArgs.length > 0) text += ` ${theme.fg("toolOutput", commandArgs.join(" "))}`;
 			return new Text(text, 0, 0);
 		},
 		renderResult(result, { expanded, isPartial }, theme) {
