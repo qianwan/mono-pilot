@@ -1,0 +1,107 @@
+/**
+ * Subsystem orchestration: init and shutdown for LSP, Cluster, Memory, and Bus.
+ *
+ * Dependency order:
+ *   init:     LSP → Cluster → Memory (uses Cluster embedding) → Bus (uses Cluster socket)
+ *   shutdown: Bus → Memory → Cluster (LSP has no shutdown)
+ */
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { LSP } from "../lsp/index.js";
+import { deriveAgentId } from "../agents-paths.js";
+import { loadResolvedMemorySearchConfig } from "../memory/config/loader.js";
+import { initCluster, closeCluster, type ClusterService } from "../cluster/init.js";
+import { setMemoryWorkersEmbeddingProvider, closeMemorySearchManagers } from "../memory/runtime/index.js";
+import { warmMemorySearch } from "../memory/warm.js";
+import type { BusHandle } from "../cluster/bus.js";
+import type { MessagePushPayload } from "../cluster/protocol.js";
+
+export interface SubsystemHandles {
+	bus: BusHandle | null;
+}
+
+/**
+ * Initialize all subsystems. Fire-and-forget from session_start.
+ */
+export async function initSubsystems(pi: ExtensionAPI, ctx: ExtensionContext): Promise<SubsystemHandles> {
+	const agentId = deriveAgentId(ctx.cwd);
+	const sessionManager = (ctx as any).sessionManager;
+	const getSessionId = () => sessionManager?.getSessionId?.() ?? "unknown";
+
+	// 1. LSP
+	LSP.init(ctx.cwd);
+
+	// 2. Cluster + 3. Memory (cluster provides embedding for memory)
+	const settings = await loadResolvedMemorySearchConfig();
+	let cluster: ClusterService | null = null;
+
+	if (settings.enabled && settings.provider === "local") {
+		cluster = await initCluster({
+			...settings.local,
+			agentId,
+			getSessionId,
+		});
+		setMemoryWorkersEmbeddingProvider(cluster.embedding);
+	}
+
+	await warmMemorySearch({ workspaceDir: ctx.cwd, agentId });
+
+	// 4. Bus (message injection into agent conversation)
+	const bus = cluster?.bus ?? null;
+	if (bus) {
+		bus.onMessage(createBusMessageInjector(pi));
+	}
+
+	return { bus };
+}
+
+/**
+ * Shutdown all subsystems in reverse dependency order.
+ */
+export async function shutdownSubsystems(handles: SubsystemHandles | null): Promise<void> {
+	try {
+		// Bus
+		if (handles?.bus) handles.bus.close();
+		// Memory
+		await closeMemorySearchManagers();
+		// Cluster
+		await closeCluster();
+	} catch (err) {
+		console.warn(`[subsystems] shutdown failed: ${String(err)}`);
+	}
+}
+
+// --- Bus message injection (debounced) ---
+
+function createBusMessageInjector(pi: ExtensionAPI): (msg: MessagePushPayload) => void {
+	let pending: MessagePushPayload[] = [];
+	let timer: ReturnType<typeof setTimeout> | null = null;
+
+	function flush(): void {
+		if (pending.length === 0) return;
+		const msgs = pending;
+		pending = [];
+		timer = null;
+
+		const lines = msgs.map((m) => {
+			const text =
+				typeof m.payload === "object" && m.payload !== null && "text" in m.payload
+					? (m.payload as { text: string }).text
+					: JSON.stringify(m.payload);
+			const ch = m.channel && m.channel !== "public" ? ` [${m.channel}]` : "";
+			return `[from ${m.from}${ch}] ${text}`;
+		});
+
+		const envelope =
+			"<bus_messages>\n" + lines.join("\n") + "\n</bus_messages>\n\n" +
+			"You received the above messages from other agents via the message bus. " +
+			"Respond in character. Use the bus_send tool to reply.";
+
+		pi.sendUserMessage(envelope, { deliverAs: "followUp" });
+	}
+
+	return (msg) => {
+		pending.push(msg);
+		if (timer) clearTimeout(timer);
+		timer = setTimeout(flush, 300);
+	};
+}

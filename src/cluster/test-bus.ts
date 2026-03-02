@@ -9,6 +9,8 @@
  */
 
 import { tryBecomeLeader } from "./leader.js";
+import { createEmbeddingHandler } from "./services/embedding.js";
+import { createBusHandler } from "./services/bus.js";
 import { tryFollowLeader } from "./follower.js";
 import { connectBus } from "./bus.js";
 import { cleanupSocket } from "./socket.js";
@@ -44,7 +46,8 @@ async function main(): Promise<void> {
 
 	// --- Start leader ---
 	console.log("Starting leader...");
-	const leader = await tryBecomeLeader({ provider: dummyProvider });
+	const services = [createEmbeddingHandler(dummyProvider), createBusHandler()];
+	const leader = await tryBecomeLeader(services);
 	assert(leader !== null, "leader started");
 	if (!leader) { process.exit(1); }
 
