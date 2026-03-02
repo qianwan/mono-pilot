@@ -1,14 +1,7 @@
-import type { Llama, LlamaEmbeddingContext, LlamaModel } from "node-llama-cpp";
+import type { Llama, LlamaEmbeddingContext, LlamaModel, LlamaLogLevel } from "node-llama-cpp";
 import { DEFAULT_LOCAL_MODEL, DEFAULT_MODEL_CACHE_DIR } from "./constants.js";
 import { importNodeLlamaCpp } from "./node-llama.js";
 import type { EmbeddingProvider } from "./types.js";
-
-const LLAMA_SUPPRESS_PATTERNS = [
-	"model vocab missing newline token",
-	"embeddings required but some input tokens were not marked as outputs",
-];
-let stderrFilterDepth = 0;
-let stderrOriginalWrite: typeof process.stderr.write | null = null;
 
 function normalizeEmbedding(vector: number[]): number[] {
 	const sanitized = vector.map((value) => (Number.isFinite(value) ? value : 0));
@@ -19,35 +12,6 @@ function normalizeEmbedding(vector: number[]): number[] {
 	return sanitized.map((value) => value / magnitude);
 }
 
-async function withLlamaWarningFilter<T>(fn: () => Promise<T>): Promise<T> {
-	if (stderrFilterDepth === 0) {
-		stderrOriginalWrite = process.stderr.write.bind(process.stderr);
-		process.stderr.write = ((chunk, encodingOrCb, cb) => {
-			const encoding = typeof encodingOrCb === "string" ? encodingOrCb : undefined;
-			const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
-			const text =
-				typeof chunk === "string"
-					? chunk
-					: Buffer.from(chunk).toString(encoding ?? "utf8");
-			if (LLAMA_SUPPRESS_PATTERNS.some((p) => text.includes(p))) {
-				if (callback) callback();
-				return true;
-			}
-			return stderrOriginalWrite?.(chunk as never, encodingOrCb as never, cb as never) ?? true;
-		}) as typeof process.stderr.write;
-	}
-	stderrFilterDepth += 1;
-	try {
-		return await fn();
-	} finally {
-		stderrFilterDepth = Math.max(0, stderrFilterDepth - 1);
-		if (stderrFilterDepth === 0 && stderrOriginalWrite) {
-			process.stderr.write = stderrOriginalWrite;
-			stderrOriginalWrite = null;
-		}
-	}
-}
-
 export async function createLocalEmbeddingProvider(params: {
 	modelPath?: string;
 	modelCacheDir?: string;
@@ -55,7 +19,9 @@ export async function createLocalEmbeddingProvider(params: {
 	const modelPath = params.modelPath?.trim() || DEFAULT_LOCAL_MODEL;
 	const modelCacheDir = params.modelCacheDir?.trim() || DEFAULT_MODEL_CACHE_DIR;
 
-	const { getLlama, resolveModelFile } = await importNodeLlamaCpp();
+	const nodeLlamaCpp = await importNodeLlamaCpp();
+	const { getLlama, resolveModelFile } = nodeLlamaCpp;
+	const logLevel = (nodeLlamaCpp as any).LlamaLogLevel?.error as LlamaLogLevel | undefined;
 
 	let llama: Llama | null = null;
 	let model: LlamaModel | null = null;
@@ -63,14 +29,14 @@ export async function createLocalEmbeddingProvider(params: {
 
 	const ensureContext = async () => {
 		if (!llama) {
-			llama = await getLlama();
+			llama = await getLlama({ logLevel: logLevel ?? ("error" as LlamaLogLevel) });
 		}
 		if (!model) {
 			const resolved = await resolveModelFile(modelPath, modelCacheDir);
-			model = await withLlamaWarningFilter(async () => await llama!.loadModel({ modelPath: resolved }));
+			model = await llama!.loadModel({ modelPath: resolved });
 		}
 		if (!context) {
-			context = await withLlamaWarningFilter(async () => await model!.createEmbeddingContext());
+			context = await model!.createEmbeddingContext();
 		}
 		return context;
 	};

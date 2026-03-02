@@ -70,11 +70,10 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);
-		try {
-			await warmMemorySearch({ workspaceDir: ctx.cwd, agentId: deriveAgentId(ctx.cwd) });
-		} catch (error) {
+		// Fire-and-forget: don't block session startup on index sync
+		warmMemorySearch({ workspaceDir: ctx.cwd, agentId: deriveAgentId(ctx.cwd) }).catch((error) => {
 			console.warn(`[memory] warm failed: ${String(error)}`);
-		}
+		});
 	});
 
 	pi.on("session_compact", async () => {
