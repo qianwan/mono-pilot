@@ -1,5 +1,6 @@
 import type { ResolvedMemorySearchConfig } from "./types.js";
-import { DEFAULT_LOCAL_MODEL, DEFAULT_MODEL_CACHE_DIR } from "../embeddings/constants.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export const memorySearchDefaults: ResolvedMemorySearchConfig = {
 	enabled: true,
@@ -7,8 +8,8 @@ export const memorySearchDefaults: ResolvedMemorySearchConfig = {
 	sources: ["memory"],
 	extraPaths: [],
 	local: {
-		modelPath: DEFAULT_LOCAL_MODEL,
-		modelCacheDir: DEFAULT_MODEL_CACHE_DIR,
+		modelPath: "hf:gpustack/bge-m3-GGUF/bge-m3-Q8_0.gguf",
+		modelCacheDir: join(homedir(), ".mono-pilot", "models"),
 	},
 	store: {
 		vector: {

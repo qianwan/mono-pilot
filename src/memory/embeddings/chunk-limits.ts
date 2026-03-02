@@ -1,6 +1,6 @@
 import type { EmbeddingProvider } from "./types.js";
 import { estimateUtf8Bytes, splitTextToUtf8ByteLimit } from "./input-limits.js";
-import { resolveEmbeddingMaxInputTokens } from "./model-limits.js";
+
 import { hashText, type MemoryChunk } from "../indexing/files.js";
 
 export function enforceEmbeddingMaxInputTokens(
@@ -8,7 +8,9 @@ export function enforceEmbeddingMaxInputTokens(
 	chunks: MemoryChunk[],
 	hardMaxInputTokens?: number,
 ): MemoryChunk[] {
-	const providerMaxInputTokens = resolveEmbeddingMaxInputTokens(provider);
+	const providerMaxInputTokens = typeof provider.maxInputTokens === "number"
+		? provider.maxInputTokens
+		: 2048;
 	const maxInputTokens =
 		typeof hardMaxInputTokens === "number" && hardMaxInputTokens > 0
 			? Math.min(providerMaxInputTokens, hardMaxInputTokens)

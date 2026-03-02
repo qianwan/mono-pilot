@@ -1,6 +1,7 @@
 import type { Llama, LlamaEmbeddingContext, LlamaModel, LlamaLogLevel } from "node-llama-cpp";
-import { DEFAULT_LOCAL_MODEL, DEFAULT_MODEL_CACHE_DIR } from "./constants.js";
-import { importNodeLlamaCpp } from "./node-llama.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type { EmbeddingProvider } from "./types.js";
 
 function normalizeEmbedding(vector: number[]): number[] {
@@ -16,10 +17,10 @@ export async function createLocalEmbeddingProvider(params: {
 	modelPath?: string;
 	modelCacheDir?: string;
 }): Promise<EmbeddingProvider> {
-	const modelPath = params.modelPath?.trim() || DEFAULT_LOCAL_MODEL;
-	const modelCacheDir = params.modelCacheDir?.trim() || DEFAULT_MODEL_CACHE_DIR;
+	const modelPath = params.modelPath?.trim() || "hf:gpustack/bge-m3-GGUF/bge-m3-Q8_0.gguf";
+	const modelCacheDir = params.modelCacheDir?.trim() || join(homedir(), ".mono-pilot", "models");
 
-	const nodeLlamaCpp = await importNodeLlamaCpp();
+	const nodeLlamaCpp = await import("node-llama-cpp");
 	const { getLlama, resolveModelFile } = nodeLlamaCpp;
 	const logLevel = (nodeLlamaCpp as any).LlamaLogLevel?.error as LlamaLogLevel | undefined;
 
