@@ -7,6 +7,8 @@ import { setLogContext } from "./log.js";
 export interface ClusterEmbeddingService {
 	role: "leader" | "follower";
 	provider: EmbeddingProvider;
+	/** ClusterClient for bus operations (only available for followers). */
+	client?: import("./follower.js").ClusterClient;
 	close: () => Promise<void>;
 }
 
@@ -158,6 +160,7 @@ function makeFollowerService(handle: FollowerHandle): ClusterEmbeddingService {
 	return {
 		role: "follower",
 		provider,
+		client: handle.client,
 		close: async () => {
 			handle.close();
 			activeService = null;

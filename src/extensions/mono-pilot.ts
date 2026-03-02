@@ -34,6 +34,10 @@ import { loadResolvedMemorySearchConfig } from "../memory/config/loader.js";
 import memorySearchExtension from "../tools/memory-search.js";
 import memoryGetExtension from "../tools/memory-get.js";
 import { registerBuildMemoryCommand } from "./commands/build-memory.js";
+import { registerBusCommands, setBusHandle } from "./commands/bus.js";
+import { connectBus, type BusHandle } from "../cluster/bus.js";
+import busSendExtension, { setBusSendHandle } from "../tools/bus-send.js";
+import type { MessagePushPayload } from "../cluster/protocol.js";
 
 const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
@@ -61,6 +65,7 @@ const toolExtensions: ExtensionFactory[] = [
 	briefWriteExtension,
 	memorySearchExtension,
 	memoryGetExtension,
+	busSendExtension,
 ];
 
 export default function monoPilotExtension(pi: ExtensionAPI) {
@@ -70,6 +75,41 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	registerSessionMemoryHook(pi);
 	registerBuildMemoryCommand(pi);
+	registerBusCommands(pi);
+
+	let busHandle: BusHandle | null = null;
+	// Debounced bus message injection into agent conversation
+	let pendingBusMessages: MessagePushPayload[] = [];
+	let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function flushBusMessages(): void {
+		if (pendingBusMessages.length === 0) return;
+		const msgs = pendingBusMessages;
+		pendingBusMessages = [];
+		flushTimer = null;
+
+		const lines = msgs.map((m) => {
+			const text =
+				typeof m.payload === "object" && m.payload !== null && "text" in m.payload
+					? (m.payload as { text: string }).text
+					: JSON.stringify(m.payload);
+			const ch = m.channel && m.channel !== "public" ? ` [${m.channel}]` : "";
+			return `[from ${m.from}${ch}] ${text}`;
+		});
+
+		const envelope =
+			"<bus_messages>\n" + lines.join("\n") + "\n</bus_messages>\n\n" +
+			"You received the above messages from other agents via the message bus. " +
+			"Respond in character. Use the bus_send tool to reply.";
+
+		pi.sendUserMessage(envelope, { deliverAs: "followUp" });
+	}
+
+	function onBusMessage(msg: MessagePushPayload): void {
+		pendingBusMessages.push(msg);
+		if (flushTimer) clearTimeout(flushTimer);
+		flushTimer = setTimeout(flushBusMessages, 300);
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		LSP.init(ctx.cwd);
@@ -85,6 +125,17 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 					getSessionId: () => sessionManager?.getSessionId?.() ?? "unknown",
 				});
 				setMemoryWorkersEmbeddingProvider(service.provider);
+				// Connect to message bus
+				try {
+					if (service.client) {
+						busHandle = await connectBus(service.client, agentId);
+						busHandle.onMessage(onBusMessage);
+					}
+					setBusHandle(busHandle);
+					setBusSendHandle(busHandle);
+				} catch (err) {
+					console.warn(`[bus] connect failed: ${String(err)}`);
+				}
 			}
 			await warmMemorySearch({ workspaceDir: ctx.cwd, agentId });
 		})().catch((error) => {
@@ -98,6 +149,16 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		try {
+			if (busHandle) {
+				busHandle.close();
+				setBusHandle(null);
+				setBusSendHandle(null);
+				busHandle = null;
+			}
+			if (flushTimer) {
+				clearTimeout(flushTimer);
+				flushTimer = null;
+			}
 			await closeMemorySearchManagers();
 			await closeClusterEmbeddingService();
 		} catch (error) {

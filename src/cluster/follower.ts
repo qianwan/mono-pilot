@@ -8,6 +8,8 @@ import {
 	type ClusterRequest,
 	type EmbedBatchParams,
 	type EmbedBatchResult,
+	type ClusterMessage,
+	isPush,
 } from "./protocol.js";
 import type { EmbeddingProvider } from "../memory/embeddings/types.js";
 import { clusterLog } from "./log.js";
@@ -24,6 +26,8 @@ export interface FollowerHandle {
 	close: () => void;
 	/** Called when the connection to the leader drops unexpectedly. */
 	onDisconnect?: () => void;
+	/** Access the underlying client for bus operations (register, send, etc.). */
+	client: ClusterClient;
 }
 
 /**
@@ -70,7 +74,7 @@ export async function tryFollowLeader(modelId: string, identity?: FollowerIdenti
 		},
 	};
 
-	const handle: FollowerHandle = { provider, close: () => client.close() };
+	const handle: FollowerHandle = { provider, close: () => client.close(), client };
 
 	client.onDisconnect(() => {
 		if (handle.onDisconnect) handle.onDisconnect();
@@ -82,28 +86,20 @@ export async function tryFollowLeader(modelId: string, identity?: FollowerIdenti
 /**
  * Low-level RPC client over a connected Unix socket.
  */
-class ClusterClient {
+export class ClusterClient {
 	private nextId = 1;
 	private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 	private decoder = new MessageDecoder();
 	private closed = false;
 	private from: ClusterRequest["from"];
+	private pushHandler?: (method: string, payload: unknown) => void;
 
 	constructor(private socket: net.Socket, identity?: FollowerIdentity) {
 		this.from = { pid: process.pid, ...identity };
 		socket.on("data", (chunk) => {
 			const messages = this.decoder.feed(chunk);
 			for (const msg of messages) {
-				const res = msg as ClusterResponse;
-				const handler = this.pending.get(res.id);
-				if (handler) {
-					this.pending.delete(res.id);
-					if (res.error) {
-						handler.reject(new Error(res.error));
-					} else {
-						handler.resolve(res.result);
-					}
-				}
+				this.handleIncoming(msg);
 			}
 		});
 
@@ -119,6 +115,27 @@ class ClusterClient {
 
 	onDisconnect(cb: () => void): void {
 		this.disconnectCallback = cb;
+	}
+
+	onPush(handler: (method: string, payload: unknown) => void): void {
+		this.pushHandler = handler;
+	}
+
+	private handleIncoming(msg: ClusterMessage): void {
+		if (isPush(msg)) {
+			this.pushHandler?.(msg.method, msg.payload);
+			return;
+		}
+		const res = msg as ClusterResponse;
+		const handler = this.pending.get(res.id);
+		if (handler) {
+			this.pending.delete(res.id);
+			if (res.error) {
+				handler.reject(new Error(res.error));
+			} else {
+				handler.resolve(res.result);
+			}
+		}
 	}
 
 	call<T = unknown>(method: string, params: unknown, timeoutMs = 30_000): Promise<T> {

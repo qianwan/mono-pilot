@@ -1,6 +1,6 @@
 /** Wire protocol for cluster IPC over Unix domain socket. */
 
-export const CLUSTER_PROTOCOL_VERSION = 1;
+export const CLUSTER_PROTOCOL_VERSION = 2;
 
 // --- Request / Response types ---
 
@@ -19,6 +19,21 @@ export interface ClusterResponse {
 	error?: string;
 }
 
+// --- Server Push (leader → follower, unsolicited) ---
+
+export interface ClusterPush {
+	type: "push";
+	method: string;
+	payload: unknown;
+}
+
+/** Any message that can appear on the wire. */
+export type ClusterMessage = ClusterRequest | ClusterResponse | ClusterPush;
+
+export function isPush(msg: ClusterMessage): msg is ClusterPush {
+	return "type" in msg && (msg as ClusterPush).type === "push";
+}
+
 // --- Embedding-specific payloads ---
 
 export interface EmbedBatchParams {
@@ -29,12 +44,48 @@ export interface EmbedBatchResult {
 	vectors: number[][];
 }
 
+// --- Bus RPC params (follower → leader) ---
+
+export interface RegisterParams {
+	agentId: string;
+	channels?: string[];
+}
+
+export interface SendParams {
+	to: string;
+	channel?: string;
+	payload: unknown;
+}
+
+export interface BroadcastParams {
+	channel?: string;
+	payload: unknown;
+}
+
+export interface SubscribeParams {
+	channels: string[];
+}
+
+// --- Push payloads (leader → follower) ---
+
+export interface MessagePushPayload {
+	from: string;
+	channel?: string;
+	payload: unknown;
+	seq: number;
+}
+
+export interface PresencePushPayload {
+	agentId: string;
+	status: "joined" | "left";
+}
+
 // --- Serialize / Deserialize (length-prefixed JSON over stream) ---
 
 /**
  * Encode a message as a length-prefixed buffer: [4-byte LE length][JSON payload].
  */
-export function encodeMessage(msg: ClusterRequest | ClusterResponse): Buffer {
+export function encodeMessage(msg: ClusterMessage): Buffer {
 	const json = Buffer.from(JSON.stringify(msg), "utf8");
 	const header = Buffer.alloc(4);
 	header.writeUInt32LE(json.length, 0);
@@ -47,9 +98,9 @@ export function encodeMessage(msg: ClusterRequest | ClusterResponse): Buffer {
 export class MessageDecoder {
 	private buf = Buffer.alloc(0);
 
-	feed(chunk: Buffer): (ClusterRequest | ClusterResponse)[] {
+	feed(chunk: Buffer): ClusterMessage[] {
 		this.buf = Buffer.concat([this.buf, chunk]);
-		const messages: (ClusterRequest | ClusterResponse)[] = [];
+		const messages: ClusterMessage[] = [];
 		while (this.buf.length >= 4) {
 			const len = this.buf.readUInt32LE(0);
 			if (this.buf.length < 4 + len) break;
