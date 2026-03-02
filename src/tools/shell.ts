@@ -12,7 +12,6 @@ import {
 	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -26,6 +25,8 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
+
+import { deriveAgentId, getAgentTerminalsDir } from "../agents-paths.js";
 
 // Tool docs are surfaced via system-prompt extension functions namespace.
 const DEFAULT_BLOCK_UNTIL_MS = 30_000;
@@ -101,24 +102,10 @@ function compactCommandForRender(command: string): string {
 	return `${singleLine.slice(0, MAX_RENDER_COMMAND_CHARS - 1)}…`;
 }
 
-function encodeWorkspacePath(workspace: string): string {
-	return resolve(workspace)
-		.replace(/^[A-Za-z]:/, (match) => match[0])
-		.replace(/[\\/]/g, "-")
-		.replace(/^-+/, "");
-}
-
-function getTerminalsDir(workspaceCwd: string): string {
-	const workspaceKey = encodeWorkspacePath(workspaceCwd);
-	const primary = join(resolve(workspaceCwd), ".pi", "terminals");
-	try {
-		mkdirSync(primary, { recursive: true });
-		return primary;
-	} catch {
-		const fallback = join(tmpdir(), "pi-shell", workspaceKey, "terminals");
-		mkdirSync(fallback, { recursive: true });
-		return fallback;
-	}
+function getTerminalsDir(agentId: string, sessionId: string): string {
+	const dir = getAgentTerminalsDir(agentId, sessionId);
+	mkdirSync(dir, { recursive: true });
+	return dir;
 }
 
 function getNextTerminalId(terminalsDir: string): number {
@@ -545,7 +532,9 @@ export default function (pi: ExtensionAPI) {
 			const defaultWorkingDirectory = resolveWorkingDirectory(runtimeState.cwd, ctx.cwd);
 			const workingDirectory = resolveWorkingDirectory(params.working_directory ?? defaultWorkingDirectory, ctx.cwd);
 			const blockUntilMs = normalizeBlockUntilMs(params.block_until_ms);
-			const terminalsDir = getTerminalsDir(ctx.cwd);
+			const agentId = deriveAgentId(ctx.cwd);
+			const sessionId = (ctx as any).sessionManager?.getSessionId?.() ?? "default";
+			const terminalsDir = getTerminalsDir(agentId, sessionId);
 
 			const session = createTerminalSession(terminalsDir, command, workingDirectory, runtimeState, activeSessions);
 			const waitResult = await waitForeground(session, blockUntilMs, signal);

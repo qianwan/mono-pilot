@@ -23,6 +23,10 @@ export function getAgentMemoryDir(agentId: string): string {
 	return join(getAgentDir(agentId), "memory");
 }
 
+export function getAgentTerminalsDir(agentId: string, sessionId: string): string {
+	return join(getAgentDir(agentId), "terminals", sessionId);
+}
+
 export async function listAgentIds(): Promise<string[]> {
 	const baseDir = getAllAgentsDir();
 	try {
