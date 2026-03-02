@@ -84,10 +84,17 @@ export default function memorySearchExtension(pi: ExtensionAPI) {
 				typeof input.targetAgentId === "string" && input.targetAgentId.trim().length > 0
 					? compactForCommandArg(input.targetAgentId, MAX_RENDER_AGENTID_CHARS)
 					: undefined;
+			const instruct =
+				typeof input.instruct === "string" && input.instruct.trim().length > 0
+					? compactForCommandArg(input.instruct, MAX_RENDER_QUERY_CHARS)
+					: undefined;
 
 			const commandArgs = [query];
+			if (instruct) commandArgs.push("--instruct", instruct);
 			if (scope) commandArgs.push("--scope", scope);
 			if (targetAgentId) commandArgs.push("--target-agent-id", targetAgentId);
+			if (input.maxResults != null) commandArgs.push("--max-results", String(input.maxResults));
+			if (input.minScore != null) commandArgs.push("--min-score", String(input.minScore));
 			const commandText = commandArgs.map(shellQuoteArg).join(" ");
 
 			let text = theme.fg("toolTitle", theme.bold("MemorySearch"));
