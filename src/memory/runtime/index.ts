@@ -10,11 +10,43 @@ import type {
 	MemorySearchSyncOptions,
 } from "../types.js";
 import type { ResolvedMemorySearchConfig } from "../config/types.js";
-import type {
-	WorkerInitData,
-	WorkerRequest,
-	WorkerOutboundMessage,
-} from "./protocol.js";
+import { loadResolvedMemorySearchConfig } from "../config/loader.js";
+
+// --- Protocol types (shared with thread.ts) ---
+
+export interface WorkerInitData {
+	agentId: string;
+	workspaceDir: string;
+	settings: ResolvedMemorySearchConfig;
+}
+
+export type WorkerRequest =
+	| { id: number; type: "search"; query: string; opts?: MemorySearchQueryOptions }
+	| { id: number; type: "sync"; opts?: MemorySearchSyncOptions }
+	| { id: number; type: "syncDirty" }
+	| { id: number; type: "close" };
+
+export interface WorkerResultResponse {
+	id: number;
+	type: "result";
+	data: unknown;
+}
+
+export interface WorkerErrorResponse {
+	id: number;
+	type: "error";
+	message: string;
+}
+
+export type WorkerResponse = WorkerResultResponse | WorkerErrorResponse;
+
+export type WorkerNotification =
+	| { type: "ready" }
+	| { type: "dirty"; value: boolean };
+
+export type WorkerOutboundMessage = WorkerResponse | WorkerNotification;
+
+// --- Worker proxy (main thread) ---
 
 interface Pending {
 	resolve: (value: any) => void;
@@ -31,10 +63,10 @@ function resolveWorkerPath(): string {
 		return threadFile;
 	}
 	const projectRoot = resolve(thisDir, "../../..");
-	return join(projectRoot, "dist/src/memory/worker/thread.js");
+	return join(projectRoot, "dist/src/memory/runtime/thread.js");
 }
 
-export class WorkerMemoryProxy implements MemorySearchManager {
+class WorkerMemoryProxy implements MemorySearchManager {
 	private worker: Worker;
 	private nextId = 1;
 	private pending = new Map<number, Pending>();
@@ -178,4 +210,46 @@ export class WorkerMemoryProxy implements MemorySearchManager {
 		}
 		this.pending.clear();
 	}
+}
+
+// --- Singleton registry ---
+
+const managerCache = new Map<string, WorkerMemoryProxy>();
+
+export async function getMemorySearchManager(params: {
+	workspaceDir: string;
+	agentId: string;
+}): Promise<WorkerMemoryProxy | null> {
+	const settings = await loadResolvedMemorySearchConfig();
+	if (!settings.enabled) return null;
+	if (!settings.sources.includes("memory") && !settings.sources.includes("sessions")) return null;
+
+	const key = params.agentId;
+	const cached = managerCache.get(key);
+	if (cached) return cached;
+
+	const manager = new WorkerMemoryProxy({
+		agentId: params.agentId,
+		workspaceDir: params.workspaceDir,
+		settings,
+	});
+	managerCache.set(key, manager);
+	return manager;
+}
+
+export async function closeMemorySearchManagers(): Promise<void> {
+	const managers = Array.from(managerCache.values());
+	managerCache.clear();
+	for (const manager of managers) {
+		if (manager.close) {
+			await manager.close();
+		}
+	}
+}
+
+export function peekMemorySearchManager(params: {
+	agentId: string;
+}): WorkerMemoryProxy | null {
+	const key = params.agentId;
+	return managerCache.get(key) ?? null;
 }

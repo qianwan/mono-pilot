@@ -2,7 +2,7 @@ import { keyHint, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import { deriveAgentId } from "../src/brief/paths.js";
-import { getMemorySearchManager } from "../src/memory/search-manager.js";
+import { getMemorySearchManager } from "../src/memory/runtime/index.js";
 
 const DESCRIPTION =
 	"Search the memory index for relevant snippets. Supports scope: self, agent, all. Returns paths, line ranges, and scored excerpts.";

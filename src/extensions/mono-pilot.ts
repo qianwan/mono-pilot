@@ -24,7 +24,7 @@ import lspSymbolsExtension from "../../tools/lsp-symbols.js";
 import { LSP } from "../lsp/index.js";
 import briefWriteExtension from "../../tools/brief-write.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
-import { closeMemorySearchManagers } from "../memory/search-manager.js";
+import { closeMemorySearchManagers } from "../memory/runtime/index.js";
 import { warmMemorySearch } from "../memory/warm.js";
 import { deriveAgentId } from "../brief/paths.js";
 import memorySearchExtension from "../../tools/memory-search.js";

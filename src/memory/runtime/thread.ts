@@ -1,7 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
-import type { WorkerInitData, WorkerRequest, WorkerOutboundMessage } from "./protocol.js";
+import type { WorkerInitData, WorkerRequest, WorkerOutboundMessage } from "./index.js";
 import type { MemorySearchManager } from "../types.js";
-import { MemoryIndexManager } from "../manager/index-manager.js";
+import { MemoryIndexManager } from "../index-manager.js";
 import { memoryLog } from "../log.js";
 
 function post(msg: WorkerOutboundMessage): void {

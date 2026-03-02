@@ -1,5 +1,5 @@
 import { loadResolvedMemorySearchConfig } from "./config/loader.js";
-import { getMemorySearchManager } from "./search-manager.js";
+import { getMemorySearchManager } from "./runtime/index.js";
 import { memoryLog } from "./log.js";
 
 export async function warmMemorySearch(params: {
