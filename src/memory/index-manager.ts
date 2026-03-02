@@ -86,6 +86,13 @@ export class MemoryIndexManager implements MemorySearchManager {
 	async search(query: string, opts?: MemorySearchQueryOptions): Promise<MemorySearchResult[]> {
 		const cleaned = query.trim();
 		if (!cleaned) return [];
+
+		// Qwen3-Embedding instruct format: only on query side, documents stay raw.
+		// Format: "Instruct: {task}\nQuery:{text}" (no space after "Query:")
+		const DEFAULT_INSTRUCT = "Retrieve relevant code snippets or documentation passages that match the query";
+		const instruct = opts?.instruct?.trim() || DEFAULT_INSTRUCT;
+		const instructQuery = `Instruct: ${instruct}\nQuery:${cleaned}`;
+
 		if (this.settings.sync.onSearch && this.dirty) {
 			await this.sync({ reason: "search" }).catch((err) => {
 				console.warn(`[memory] sync failed (search): ${String(err)}`);
@@ -123,7 +130,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 		const provider = await this.getProvider();
 		if (provider) {
 			try {
-				const queryEmbedding = await provider.embedQuery(cleaned);
+				const queryEmbedding = await provider.embedQuery(instructQuery);
 				const vectorReady = await this.ensureVectorReady(queryEmbedding.length);
 				if (vectorReady) {
 					const hybrid = this.settings.query.hybrid;

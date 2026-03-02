@@ -19,6 +19,7 @@ export interface MemorySearchQueryOptions {
 	sessionKey?: string;
 	scope?: MemorySearchScope;
 	targetAgentId?: string;
+	instruct?: string;
 }
 
 export interface MemorySearchGetResult {

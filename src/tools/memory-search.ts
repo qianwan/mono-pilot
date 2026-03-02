@@ -9,6 +9,9 @@ const DESCRIPTION =
 
 const memorySearchSchema = Type.Object({
 	query: Type.String({ description: "Search query for memory snippets." }),
+	instruct: Type.Optional(
+		Type.String({ description: "Task instruction for the embedding model to improve retrieval quality. Default: general code/doc retrieval." }),
+	),
 	maxResults: Type.Optional(
 		Type.Number({ description: "Maximum number of results to return." }),
 	),
@@ -121,6 +124,7 @@ export default function memorySearchExtension(pi: ExtensionAPI) {
 		},
 		execute: async (_toolCallId, params: MemorySearchInput, _signal, _onUpdate, ctx) => {
 			const query = params.query.trim();
+			const instruct = params.instruct;
 			const maxResults = params.maxResults;
 			const minScore = params.minScore;
 			const scope = params.scope ?? "self";
@@ -167,6 +171,7 @@ export default function memorySearchExtension(pi: ExtensionAPI) {
 			}
 			try {
 				const results = await manager.search(query, {
+					instruct,
 					maxResults,
 					minScore,
 					scope,
