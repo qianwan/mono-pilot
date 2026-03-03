@@ -141,6 +141,7 @@ interface StreamStats {
 	parsedEvents: number;
 	assistantMessages: number;
 	lastAssistantText: string;
+	traceLines: string[];
 	errorMessage?: string;
 	stopReason?: string;
 }
@@ -192,6 +193,9 @@ interface SubagentTaskDetails {
 	assistant_messages: number;
 	stderr?: string;
 	preview?: string;
+	live_output?: string;
+	trace_output?: string;
+	spinner_tick?: number;
 	final_output?: string;
 }
 
@@ -216,6 +220,69 @@ function compact(value: string, maxLength: number): string {
 	const normalized = value.replace(/\s+/g, " ").trim();
 	if (normalized.length <= maxLength) return normalized;
 	return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function compactTail(value: string, maxLength: number): string {
+	const normalized = value.replace(/\r/g, "");
+	if (normalized.length <= maxLength) return normalized;
+	return `…${normalized.slice(Math.max(0, normalized.length - (maxLength - 1)))}`;
+}
+
+function safeStringify(value: unknown): string {
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return String(value);
+	}
+}
+
+function appendTrace(stats: StreamStats, line: string): void {
+	const trimmed = line.trim();
+	if (!trimmed) return;
+	stats.traceLines.push(trimmed);
+	const TRACE_MAX_LINES = 240;
+	if (stats.traceLines.length > TRACE_MAX_LINES) {
+		stats.traceLines.splice(0, stats.traceLines.length - TRACE_MAX_LINES);
+	}
+}
+
+function getAssistantTraceLines(message: unknown): string[] {
+	if (!message || typeof message !== "object") return [];
+	const record = message as Record<string, unknown>;
+	if (record.role !== "assistant") return [];
+	const parts = record.content;
+	if (!Array.isArray(parts)) return [];
+
+	const lines: string[] = [];
+	for (const part of parts) {
+		if (!part || typeof part !== "object") continue;
+		const partRecord = part as Record<string, unknown>;
+		if (partRecord.type === "thinking" && typeof partRecord.thinking === "string") {
+			lines.push(`[thinking] ${partRecord.thinking}`);
+			continue;
+		}
+		if (partRecord.type === "toolCall") {
+			const name = typeof partRecord.name === "string" ? partRecord.name : "(unknown)";
+			const args = safeStringify(partRecord.arguments ?? {});
+			lines.push(`[tool_call] ${name} ${args}`);
+			continue;
+		}
+		if (partRecord.type === "text" && typeof partRecord.text === "string") {
+			lines.push(`[text] ${partRecord.text}`);
+		}
+	}
+
+	return lines;
+}
+
+function getCurrentLine(text: string): string {
+	const lines = text.replace(/\r/g, "").split("\n");
+	const last = lines[lines.length - 1] ?? "";
+	if (last.trim().length > 0) return last;
+	for (let i = lines.length - 2; i >= 0; i--) {
+		if (lines[i]!.trim().length > 0) return lines[i]!;
+	}
+	return "";
 }
 
 function parseBooleanLike(value: unknown): boolean | undefined {
@@ -630,9 +697,62 @@ function parseMessageMeta(message: unknown): { stopReason?: string; errorMessage
 	};
 }
 
+function getToolResultText(result: unknown): string | undefined {
+	if (!result || typeof result !== "object") return undefined;
+	const record = result as Record<string, unknown>;
+	const content = record.content;
+	if (!Array.isArray(content)) return undefined;
+
+	const textParts: string[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object") continue;
+		const partRecord = part as Record<string, unknown>;
+		if (partRecord.type === "text" && typeof partRecord.text === "string") {
+			textParts.push(partRecord.text);
+		}
+	}
+
+	if (textParts.length === 0) return undefined;
+	return textParts.join("\n\n").trim();
+}
+
 function getProgressPreview(stats: StreamStats): string {
-	if (stats.lastAssistantText.length > 0) return compact(stats.lastAssistantText, 220);
-	return "(running...)";
+	if (stats.lastAssistantText.length > 0) {
+		const line = getCurrentLine(stats.lastAssistantText);
+		if (line.length > 0) return compactTail(line, 220);
+		return compactTail(stats.lastAssistantText.replace(/\s+/g, " ").trim(), 220);
+	}
+	if (stats.traceLines.length > 0) {
+		return compactTail(stats.traceLines[stats.traceLines.length - 1]!, 220);
+	}
+	return "running...";
+}
+
+function getTraceOutput(stats: StreamStats): string {
+	if (stats.traceLines.length === 0) return "";
+	return stats.traceLines.join("\n");
+}
+
+function getLiveOutput(stats: StreamStats): string {
+	const trace = getTraceOutput(stats);
+	if (trace.length > 0) {
+		const MAX_TRACE_CHARS = 12000;
+		if (trace.length <= MAX_TRACE_CHARS) return trace;
+		return `...\n${trace.slice(trace.length - MAX_TRACE_CHARS)}`;
+	}
+
+	const raw = stats.lastAssistantText.replace(/\r/g, "").trim();
+	if (!raw) return "running...";
+	const MAX_CHARS = 8000;
+	if (raw.length <= MAX_CHARS) return raw;
+	return `...\n${raw.slice(raw.length - MAX_CHARS)}`;
+}
+
+const RUNNING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
+function getRunningSpinner(seed: number): string {
+	const index = Math.abs(Math.floor(seed)) % RUNNING_SPINNER_FRAMES.length;
+	return RUNNING_SPINNER_FRAMES[index] ?? RUNNING_SPINNER_FRAMES[0];
 }
 
 async function runSubagentForeground(
@@ -663,6 +783,18 @@ async function runSubagentForeground(
 			parsedEvents: 0,
 			assistantMessages: 0,
 			lastAssistantText: "",
+			traceLines: [],
+		};
+
+		// Throttle streaming updates to avoid excessive re-renders
+		let lastUpdateTime = 0;
+		const THROTTLE_MS = 150;
+		const throttledUpdate = () => {
+			const now = Date.now();
+			if (now - lastUpdateTime >= THROTTLE_MS) {
+				lastUpdateTime = now;
+				onAssistantUpdate?.({ ...stats });
+			}
 		};
 
 		const parseLine = (line: string) => {
@@ -677,7 +809,31 @@ async function runSubagentForeground(
 
 			stats.parsedEvents++;
 
-			if (event.type === "message_end" && event.message) {
+			// Streaming: capture partial assistant text for real-time preview
+			if (event.type === "message_update" && event.message) {
+				const text = getAssistantTextFromMessage(event.message);
+				if (text) {
+					stats.lastAssistantText = text;
+					throttledUpdate();
+				}
+			} else if (event.type === "tool_execution_start") {
+				const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
+				stats.lastAssistantText = `[tool:${toolName}] running`;
+				throttledUpdate();
+			} else if (event.type === "tool_execution_update") {
+				const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
+				const partialText = getToolResultText((event as Record<string, unknown>).partialResult);
+				stats.lastAssistantText = partialText ? `[tool:${toolName}] ${partialText}` : `[tool:${toolName}] running`;
+				throttledUpdate();
+			} else if (event.type === "tool_execution_end") {
+				const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
+				const resultText = getToolResultText((event as Record<string, unknown>).result);
+				stats.lastAssistantText = resultText ? `[tool:${toolName}] ${resultText}` : `[tool:${toolName}] done`;
+				throttledUpdate();
+			} else if (event.type === "message_end" && event.message) {
+				for (const traceLine of getAssistantTraceLines(event.message)) {
+					appendTrace(stats, traceLine);
+				}
 				const text = getAssistantTextFromMessage(event.message);
 				const meta = parseMessageMeta(event.message);
 				if (meta.stopReason) stats.stopReason = meta.stopReason;
@@ -962,7 +1118,10 @@ async function executeTask(task: NormalizedTaskInput, index: number, options: Ex
 		selected_model: selectedModel?.modelId,
 		parsed_events: 0,
 		assistant_messages: 0,
-		preview: "(running...)",
+		preview: "running...",
+		live_output: "running...",
+		trace_output: "",
+		spinner_tick: 0,
 	};
 
 	options.onProgress?.({ ...detail });
@@ -1004,12 +1163,23 @@ async function executeTask(task: NormalizedTaskInput, index: number, options: Ex
 		started_at: new Date().toISOString(),
 	});
 
+	let spinnerTimer: ReturnType<typeof setInterval> | null = null;
 	try {
+		const SPINNER_HEARTBEAT_MS = 80;
+		spinnerTimer = setInterval(() => {
+			if (detail.status !== "running") return;
+			detail.spinner_tick = (detail.spinner_tick ?? 0) + 1;
+			options.onProgress?.({ ...detail });
+		}, SPINNER_HEARTBEAT_MS);
+		spinnerTimer.unref?.();
+
 		const runResult = await runSubagentForeground(options.piCliPath, args, options.ctx.cwd, options.signal, (stats) => {
 			detail.status = "running";
 			detail.parsed_events = stats.parsedEvents;
 			detail.assistant_messages = stats.assistantMessages;
 			detail.preview = getProgressPreview(stats);
+			detail.live_output = getLiveOutput(stats);
+			detail.trace_output = getTraceOutput(stats);
 			options.onProgress?.({ ...detail });
 		});
 
@@ -1021,6 +1191,7 @@ async function executeTask(task: NormalizedTaskInput, index: number, options: Ex
 		detail.parsed_events = runResult.stats.parsedEvents;
 		detail.assistant_messages = runResult.stats.assistantMessages;
 		detail.stderr = runResult.stderr.trim() || undefined;
+		detail.trace_output = getTraceOutput(runResult.stats);
 
 		if (isError) {
 			const errorText = runResult.stats.errorMessage || runResult.stderr.trim() || finalOutput || "Subagent execution failed.";
@@ -1044,6 +1215,7 @@ async function executeTask(task: NormalizedTaskInput, index: number, options: Ex
 		detail.status = "completed";
 		detail.final_output = finalOutput || "(no output)";
 		detail.preview = compact(detail.final_output, 220);
+		detail.live_output = undefined;
 
 		writeSubagentState(session.statePath, {
 			id: session.id,
@@ -1062,6 +1234,7 @@ async function executeTask(task: NormalizedTaskInput, index: number, options: Ex
 		detail.exit_code = 1;
 		detail.stderr = message;
 		detail.preview = compact(message, 220);
+		detail.live_output = undefined;
 		detail.final_output = message;
 
 		writeSubagentState(session.statePath, {
@@ -1075,6 +1248,10 @@ async function executeTask(task: NormalizedTaskInput, index: number, options: Ex
 			exit_code: 1,
 		});
 		return detail;
+	} finally {
+		if (spinnerTimer) {
+			clearInterval(spinnerTimer);
+		}
 	}
 }
 
@@ -1115,6 +1292,78 @@ export default function (pi: ExtensionAPI) {
 				text += ` ${theme.fg("dim", suffix.join(" "))}`;
 			}
 			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			const details = result.details as SubagentDetails | undefined;
+			if (!details) {
+				const raw = result.content?.map((c: any) => c.text ?? "").join("") ?? "";
+				return new Text(raw || "(no output)", 0, 0);
+			}
+
+			const isParallel = details.mode === "parallel";
+			const hasFailed = details.failed_tasks > 0;
+
+			// Streaming: collapsed shows one-line preview, expanded shows live multiline output.
+			if (isPartial) {
+				if (expanded) {
+					const lines: string[] = [];
+					for (const task of details.results) {
+						if (isParallel) {
+							const spinner = getRunningSpinner((task.spinner_tick ?? 0) + task.task_index);
+							lines.push(theme.fg("warning", `${spinner} [${task.task_index + 1}] ${task.description}`));
+						}
+						const live = task.trace_output ?? task.live_output ?? task.preview ?? "running...";
+						lines.push(live);
+						if (isParallel && task.task_index < details.results.length - 1) lines.push("");
+					}
+					return new Text(lines.join("\n"), 0, 0);
+				}
+
+				if (isParallel) {
+					const running = details.results.filter((r) => r.status === "running");
+					const done = details.completed_tasks;
+					const label = `${done}/${details.total_tasks}`;
+					const preview = running.length > 0 ? compact(running[0].preview ?? "", 90) : "...";
+					const seed = running.length > 0 ? (running[0]?.spinner_tick ?? 0) : 0;
+					const spinner = getRunningSpinner(seed);
+					return new Text(theme.fg("warning", `${spinner} ${label} `) + theme.fg("dim", preview), 0, 0);
+				}
+				const task = details.results[0];
+				const preview = task?.preview ?? "running...";
+				const spinner = getRunningSpinner(task?.spinner_tick ?? 0);
+				return new Text(theme.fg("warning", `${spinner} `) + theme.fg("dim", compact(preview, 110)), 0, 0);
+			}
+
+			// Completed, collapsed: compact summary
+			if (!expanded) {
+				if (isParallel) {
+					const icon = hasFailed ? theme.fg("error", "✗") : theme.fg("success", "✓");
+					const summary = `${details.completed_tasks}/${details.total_tasks} completed`;
+					const failText = hasFailed ? `, ${details.failed_tasks} failed` : "";
+					return new Text(`${icon} ${summary}${failText}`, 0, 0);
+				}
+				const task = details.results[0];
+				const icon = task?.status === "failed" ? theme.fg("error", "✗") : theme.fg("success", "✓");
+				const preview = compact(task?.final_output ?? task?.preview ?? "(no output)", 110);
+				return new Text(`${icon} ${preview}`, 0, 0);
+			}
+
+			// Expanded: full output
+			const lines: string[] = [];
+			for (const task of details.results) {
+				if (isParallel) {
+					const icon = task.status === "failed" ? "✗" : "✓";
+					lines.push(theme.fg(task.status === "failed" ? "error" : "success", `${icon} [${task.task_index + 1}] ${task.description}`));
+				}
+				if (task.trace_output && task.trace_output.trim().length > 0) {
+					lines.push(task.trace_output);
+					if (task.final_output && task.final_output.trim().length > 0) lines.push("");
+				}
+				const output = task.final_output ?? task.preview ?? "(no output)";
+				lines.push(output);
+				if (isParallel && task.task_index < details.results.length - 1) lines.push("");
+			}
+			return new Text(lines.join("\n"), 0, 0);
 		},
 		async execute(_toolCallId, params: SubagentInput, signal, onUpdate, ctx) {
 			try {
@@ -1196,7 +1445,7 @@ export default function (pi: ExtensionAPI) {
 					onProgress: (detail) => {
 						lastProgress = detail;
 						onUpdate?.({
-							content: [{ type: "text", text: detail.preview ?? "(running...)" }],
+							content: [{ type: "text", text: detail.preview ?? "running..." }],
 							details: buildSubagentDetails("single", [detail]),
 						});
 					},
