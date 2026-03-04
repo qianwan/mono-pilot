@@ -39,6 +39,10 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
   - Collect structured multiple-choice answers from the user.
 - `subagent.ts` / `subagent-description.md` (`Subagent`)
   - Launch delegated subagent subprocesses with foreground/background and parallel orchestration.
+- `bus-send.ts` (`BusSend`)
+  - Send messages to a displayName/agentId or broadcast to a channel over the cluster bus.
+- `mailbox.ts` (`MailBox`)
+  - Read queued bus messages that are not injected into the conversation.
 - `list-mcp-resources.ts` (`ListMcpResources`)
   - Read `.pi/mcp.json` (project) and `~/.pi/mcp.json` (user) configs to list MCP resources with server metadata.
 - `fetch-mcp-resource.ts` (`FetchMcpResource`)

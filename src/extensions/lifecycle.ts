@@ -13,16 +13,28 @@ import { initCluster, closeCluster, type ClusterService } from "../cluster/init.
 import { setMemoryWorkersEmbeddingProvider, closeMemorySearchManagers } from "../memory/runtime/index.js";
 import { warmMemorySearch } from "../memory/warm.js";
 import type { BusHandle } from "../cluster/bus.js";
+import { setMailBoxHandle } from "./game/mailbox.js";
 import type { MessagePushPayload } from "../cluster/protocol.js";
 
 export interface SubsystemHandles {
 	bus: BusHandle | null;
 }
 
+export interface SubsystemOptions {
+	displayName?: string;
+	busChannels?: string[];
+	busMessageFilter?: (msg: MessagePushPayload) => boolean;
+	busMessageInjector?: (msg: MessagePushPayload) => void;
+}
+
 /**
  * Initialize all subsystems. Fire-and-forget from session_start.
  */
-export async function initSubsystems(pi: ExtensionAPI, ctx: ExtensionContext): Promise<SubsystemHandles> {
+export async function initSubsystems(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	options?: SubsystemOptions,
+): Promise<SubsystemHandles> {
 	const agentId = deriveAgentId(ctx.cwd);
 	const sessionManager = (ctx as any).sessionManager;
 	const getSessionId = () => sessionManager?.getSessionId?.() ?? "unknown";
@@ -38,6 +50,7 @@ export async function initSubsystems(pi: ExtensionAPI, ctx: ExtensionContext): P
 		cluster = await initCluster({
 			...settings.local,
 			agentId,
+			displayName: options?.displayName,
 			getSessionId,
 		});
 		setMemoryWorkersEmbeddingProvider(cluster.embedding);
@@ -48,8 +61,18 @@ export async function initSubsystems(pi: ExtensionAPI, ctx: ExtensionContext): P
 	// 4. Bus (message injection into agent conversation)
 	const bus = cluster?.bus ?? null;
 	if (bus) {
-		bus.onMessage(createBusMessageInjector(pi));
+		if (options?.busChannels && options.busChannels.length > 0) {
+			await bus.subscribe(options.busChannels);
+		}
+
+		const filter = options?.busMessageFilter;
+		const injector = options?.busMessageInjector ?? createDefaultBusMessageInjector(pi);
+		bus.onMessage((msg) => {
+			if (filter && !filter(msg)) return;
+			injector(msg);
+		});
 	}
+	setMailBoxHandle(bus ?? null);
 
 	return { bus };
 }
@@ -61,6 +84,7 @@ export async function shutdownSubsystems(handles: SubsystemHandles | null): Prom
 	try {
 		// Bus
 		if (handles?.bus) handles.bus.close();
+		setMailBoxHandle(null);
 		// Memory
 		await closeMemorySearchManagers();
 		// Cluster
@@ -72,7 +96,7 @@ export async function shutdownSubsystems(handles: SubsystemHandles | null): Prom
 
 // --- Bus message injection (debounced) ---
 
-function createBusMessageInjector(pi: ExtensionAPI): (msg: MessagePushPayload) => void {
+function createDefaultBusMessageInjector(pi: ExtensionAPI): (msg: MessagePushPayload) => void {
 	let pending: MessagePushPayload[] = [];
 	let timer: ReturnType<typeof setTimeout> | null = null;
 

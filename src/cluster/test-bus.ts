@@ -65,14 +65,14 @@ async function main(): Promise<void> {
 
 	// --- Register on bus ---
 	console.log("\nRegistering on bus...");
-	const aliceBus = await connectBus(aliceHandle.client, "alice", ["public"]);
+	const aliceBus = await connectBus(aliceHandle.client, "alice", undefined, ["public"]);
 	assert(true, "alice registered");
 
 	const presenceEvents: PresencePushPayload[] = [];
 	// Alice registers a presence handler to capture bob's join + bob's leave later
 	aliceBus.onPresence((evt) => { presenceEvents.push(evt); });
 
-	const bobBus = await connectBus(bobHandle.client, "bob", ["public"]);
+	const bobBus = await connectBus(bobHandle.client, "bob", undefined, ["public"]);
 	assert(true, "bob registered");
 
 	// Bob registers presence handler synchronously after connectBus —

@@ -24,6 +24,7 @@ export interface ClusterInitParams {
 	modelPath?: string;
 	modelCacheDir?: string;
 	agentId: string;
+	displayName?: string;
 	getSessionId?: () => string;
 }
 
@@ -55,7 +56,7 @@ export async function initCluster(params: ClusterInitParams): Promise<ClusterSer
 	const follower = await tryFollowLeader(modelId, identity);
 	if (follower) {
 		clusterLog.info("resolved as follower");
-		activeService = await makeFollowerService(follower, agentId);
+		activeService = await makeFollowerService(follower, agentId, params);
 		return activeService;
 	}
 
@@ -67,7 +68,7 @@ export async function initCluster(params: ClusterInitParams): Promise<ClusterSer
 	const retryFollower = await tryFollowLeader(modelId, identity);
 	if (retryFollower) {
 		clusterLog.info("resolved as follower (retry)");
-		activeService = await makeFollowerService(retryFollower, agentId);
+		activeService = await makeFollowerService(retryFollower, agentId, params);
 		return activeService;
 	}
 
@@ -118,7 +119,7 @@ async function makeLeaderService(params: ClusterInitParams): Promise<ClusterServ
 	}
 
 	clusterLog.info("resolved as leader");
-	const bus = createLeaderBus(params.agentId);
+	const bus = createLeaderBus(params.agentId, params.displayName);
 
 	return {
 		role: "leader",
@@ -134,7 +135,7 @@ async function makeLeaderService(params: ClusterInitParams): Promise<ClusterServ
 
 // --- Follower setup ---
 
-async function makeFollowerService(handle: FollowerHandle, agentId: string): Promise<ClusterService> {
+async function makeFollowerService(handle: FollowerHandle, agentId: string, params: ClusterInitParams): Promise<ClusterService> {
 	const inner = handle.provider;
 
 	// Proactive re-election on leader disconnect
@@ -180,7 +181,7 @@ async function makeFollowerService(handle: FollowerHandle, agentId: string): Pro
 	// Connect bus over the same socket
 	let bus: BusHandle | null = null;
 	try {
-		bus = await connectBus(handle.client, agentId);
+		bus = await connectBus(handle.client, agentId, params.displayName);
 	} catch (err) {
 		clusterLog.warn("bus connect failed", { error: String(err) });
 	}

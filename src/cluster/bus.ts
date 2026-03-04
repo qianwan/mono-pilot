@@ -24,7 +24,9 @@ export interface BusHandle {
 	/** Subscribe to additional channels. */
 	subscribe(channels: string[]): Promise<{ channels: string[] }>;
 	/** List all connected agents. */
-	roster(): Promise<{ agents: Array<{ agentId: string; channels: string[] }> }>;
+	roster(): Promise<{ agents: Array<{ agentId: string; displayName?: string; channels: string[] }> }>;
+	/** Resolve displayName or agentId to an agentId. */
+	resolveTarget(target: string): Promise<{ agentId: string; displayName?: string }>;
 	/** Register a handler for incoming messages from other agents. */
 	onMessage(handler: MessageHandler): void;
 	/** Register a handler for presence events (agent joined/left). */
@@ -46,6 +48,7 @@ export type PresenceHandler = (event: PresencePushPayload) => void;
 export async function connectBus(
 	client: ClusterClient,
 	agentId: string,
+	displayName?: string,
 	channels?: string[],
 ): Promise<BusHandle> {
 	let messageHandlers: MessageHandler[] = [];
@@ -83,7 +86,7 @@ export async function connectBus(
 
 	const result = await client.call<{ agentId: string; channels: string[] }>(
 		"register",
-		{ agentId, channels } satisfies RegisterParams,
+		{ agentId, displayName, channels } satisfies RegisterParams,
 	);
 	clusterLog.info("bus connected", { agentId: result.agentId, channels: result.channels });
 
@@ -93,6 +96,35 @@ export async function connectBus(
 		for (const evt of eventBuffer) dispatch(evt.method, evt.payload);
 		eventBuffer.length = 0;
 	});
+
+	const roster = async () => {
+		return client.call<{ agents: Array<{ agentId: string; displayName?: string; channels: string[] }> }>(
+			"roster",
+			{},
+		);
+	};
+
+	const resolveTarget = async (target: string) => {
+		const { agents } = await roster();
+		const byId = agents.find((agent) => agent.agentId === target);
+		if (byId) return { agentId: byId.agentId, displayName: byId.displayName };
+
+		const matches = agents.filter(
+			(agent) => agent.displayName?.trim() && agent.displayName.trim() === target,
+		);
+		if (matches.length === 1) {
+			return { agentId: matches[0].agentId, displayName: matches[0].displayName };
+		}
+
+		if (matches.length === 0) {
+			throw new Error(`No agent found for "${target}". Use /bus who to list agents.`);
+		}
+
+		const ids = matches.map((agent) => agent.agentId).join(", ");
+		throw new Error(
+			`DisplayName "${target}" is not unique. Candidates: ${ids}. Use agentId instead.`,
+		);
+	};
 
 	return {
 		async send(to, payload, channel) {
@@ -116,12 +148,8 @@ export async function connectBus(
 			);
 		},
 
-		async roster() {
-			return client.call<{ agents: Array<{ agentId: string; channels: string[] }> }>(
-				"roster",
-				{},
-			);
-		},
+		roster,
+		resolveTarget,
 
 		onMessage(handler) {
 			messageHandlers.push(handler);

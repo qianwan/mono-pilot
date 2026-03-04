@@ -7,6 +7,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_TOOLS = "ls";
+const MODE_GAME = "game";
+const MODE_CODING = "coding";
+const MODE_FLAG = "--mono-mode";
+const GAME_CHANNEL_FLAG = "--game-channel";
 const TOOL_BLACKLIST = new Set(["edit", "write", "grep", "read", "glob", "bash"]);
 
 function hasFlag(args: string[], names: string[]): boolean {
@@ -53,10 +57,11 @@ function sanitizeToolsArgs(args: string[]): string[] {
 	return sanitized;
 }
 
-function resolveExtensionPath(here: string): string {
+function resolveExtensionPath(here: string, mode: string): string {
+	const extensionFile = mode === MODE_GAME ? "mono-game" : "mono-pilot";
 	const candidates = [
-		resolve(here, "extensions", "mono-pilot.js"),
-		resolve(here, "extensions", "mono-pilot.ts"),
+		resolve(here, "extensions", `${extensionFile}.js`),
+		resolve(here, "extensions", `${extensionFile}.ts`),
 	];
 
 	for (const candidate of candidates) {
@@ -69,10 +74,65 @@ function resolveExtensionPath(here: string): string {
 	return candidates[0];
 }
 
+function extractMonoMode(args: string[]): { mode: string; args: string[] } {
+	const sanitized: string[] = [];
+	let mode = MODE_CODING;
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === MODE_FLAG) {
+			const value = (args[i + 1] ?? "").trim().toLowerCase();
+			if (value === MODE_GAME) mode = MODE_GAME;
+			i++;
+			continue;
+		}
+		if (arg.startsWith(`${MODE_FLAG}=`)) {
+			const value = arg.slice(`${MODE_FLAG}=`.length).trim().toLowerCase();
+			if (value === MODE_GAME) mode = MODE_GAME;
+			continue;
+		}
+		sanitized.push(arg);
+	}
+
+	return { mode, args: sanitized };
+}
+
+function normalizeGameChannelArgs(args: string[]): string[] {
+	const normalized: string[] = [];
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === GAME_CHANNEL_FLAG) {
+			const value = args[i + 1];
+			if (value !== undefined) {
+				normalized.push(arg, value);
+				i++;
+				continue;
+			}
+			normalized.push(arg);
+			continue;
+		}
+		if (arg.startsWith(`${GAME_CHANNEL_FLAG}=`)) {
+			const value = arg.slice(`${GAME_CHANNEL_FLAG}=`.length).trim();
+			if (value) {
+				normalized.push(GAME_CHANNEL_FLAG, value);
+			} else {
+				normalized.push(GAME_CHANNEL_FLAG);
+			}
+			continue;
+		}
+		normalized.push(arg);
+	}
+
+	return normalized;
+}
+
 function buildPiArgs(userArgs: string[]): string[] {
 	const here = dirname(fileURLToPath(import.meta.url));
-	const extensionPath = resolveExtensionPath(here);
-	const sanitizedUserArgs = sanitizeToolsArgs(userArgs);
+	const normalizedArgs = normalizeGameChannelArgs(userArgs);
+	const modeResult = extractMonoMode(normalizedArgs);
+	const extensionPath = resolveExtensionPath(here, modeResult.mode);
+	const sanitizedUserArgs = sanitizeToolsArgs(modeResult.args);
 
 	const args: string[] = ["--no-extensions", "--extension", extensionPath];
 	if (!hasFlag(sanitizedUserArgs, ["--tools", "--no-tools"])) {

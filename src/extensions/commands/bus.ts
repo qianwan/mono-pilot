@@ -16,6 +16,7 @@ const USAGE = [
 /** Mutable slot — set once the bus is connected in session_start. */
 let activeBus: BusHandle | null = null;
 const inbox: MessagePushPayload[] = [];
+let defaultBroadcastChannel: string | undefined;
 
 export function setBusHandle(bus: BusHandle | null): void {
 	activeBus = bus;
@@ -24,6 +25,10 @@ export function setBusHandle(bus: BusHandle | null): void {
 			inbox.push(msg);
 		});
 	}
+}
+
+export function setBusCommandDefaultChannel(channel: string | undefined): void {
+	defaultBroadcastChannel = channel;
 }
 
 export function registerBusCommands(pi: ExtensionAPI): void {
@@ -44,8 +49,16 @@ export function registerBusCommands(pi: ExtensionAPI): void {
 						return;
 					}
 					try {
-						const { seq } = await activeBus.send(sub.target, { text: sub.body });
-						notify(ctx, `→ [seq=${seq}] sent to ${sub.target}`, "info");
+						const { agentId, displayName } = await activeBus.resolveTarget(sub.target);
+						const privateChannel = `private:${agentId}`;
+						const { seq } = await activeBus.broadcast(
+							{ text: sub.body },
+							privateChannel,
+						);
+						const label = displayName?.trim()
+							? `${displayName} (${agentId})`
+							: agentId;
+						notify(ctx, `→ [seq=${seq}] sent to ${label} via ${privateChannel}`, "info");
 					} catch (err) {
 						notify(ctx, `send failed: ${(err as Error).message}`, "error");
 					}
@@ -60,9 +73,9 @@ export function registerBusCommands(pi: ExtensionAPI): void {
 					try {
 						const { seq, delivered } = await activeBus.broadcast(
 							{ text: sub.body },
-							sub.channel,
+							sub.channel ?? defaultBroadcastChannel,
 						);
-						const ch = sub.channel ?? "public";
+						const ch = sub.channel ?? defaultBroadcastChannel ?? "public";
 						notify(ctx, `→ [seq=${seq}] broadcast to ${ch} (${delivered} recipients)`, "info");
 					} catch (err) {
 						notify(ctx, `broadcast failed: ${(err as Error).message}`, "error");
@@ -77,7 +90,11 @@ export function registerBusCommands(pi: ExtensionAPI): void {
 							notify(ctx, "No agents connected", "info");
 						} else {
 							const lines = agents.map(
-								(a) => `  ${a.agentId}  [${a.channels.join(", ")}]`,
+								(a) => {
+									const name = a.displayName?.trim();
+									const label = name ? `${name} (${a.agentId})` : a.agentId;
+									return `  ${label}  [${a.channels.join(", ")}]`;
+								},
 							);
 							notify(ctx, `Connected agents:\n${lines.join("\n")}`, "info");
 						}

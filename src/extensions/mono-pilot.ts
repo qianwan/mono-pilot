@@ -26,6 +26,7 @@ import briefWriteExtension from "../tools/brief-write.js";
 import memorySearchExtension from "../tools/memory-search.js";
 import memoryGetExtension from "../tools/memory-get.js";
 import busSendExtension, { setBusSendHandle } from "../tools/bus-send.js";
+import mailboxExtension from "../tools/mailbox.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
 import { registerBuildMemoryCommand } from "./commands/build-memory.js";
 import { registerBusCommands, setBusHandle } from "./commands/bus.js";
@@ -58,6 +59,7 @@ const toolExtensions: ExtensionFactory[] = [
 	memorySearchExtension,
 	memoryGetExtension,
 	busSendExtension,
+	mailboxExtension,
 ];
 
 export default function monoPilotExtension(pi: ExtensionAPI) {
@@ -72,13 +74,34 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	let handles: SubsystemHandles | null = null;
 
 	pi.on("session_start", async (_event, ctx) => {
-		initSubsystems(pi, ctx).then((h) => {
+		if (handles) {
+			setBusHandle(null);
+			setBusSendHandle(null);
+			await shutdownSubsystems(handles);
+			handles = null;
+		}
+
+		try {
+			const h = await initSubsystems(pi, ctx, {
+				busMessageInjector: (msg) => {
+					const text =
+						typeof msg.payload === "object" && msg.payload !== null && "text" in msg.payload
+							? (msg.payload as { text: string }).text
+							: JSON.stringify(msg.payload);
+					const sender = msg.fromName ? `${msg.fromName} (${msg.from})` : msg.from;
+					const ch = msg.channel && msg.channel !== "public" ? ` [${msg.channel}]` : "";
+					const envelope =
+						`<bus_messages>\n[from ${sender}${ch}] ${text}\n</bus_messages>\n\n` +
+						"You received the above messages from other agents via the message bus.";
+					pi.sendUserMessage(envelope, { deliverAs: "followUp" });
+				},
+			});
 			handles = h;
 			setBusHandle(h.bus);
 			setBusSendHandle(h.bus);
-		}).catch((err) => {
+		} catch (err) {
 			console.warn(`[subsystems] init failed: ${String(err)}`);
-		});
+		}
 	});
 
 	pi.on("session_compact", async () => {

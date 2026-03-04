@@ -48,6 +48,7 @@ export interface EmbedBatchResult {
 
 export interface RegisterParams {
 	agentId: string;
+	displayName?: string;
 	channels?: string[];
 }
 
@@ -70,6 +71,7 @@ export interface SubscribeParams {
 
 export interface MessagePushPayload {
 	from: string;
+	fromName?: string;
 	channel?: string;
 	payload: unknown;
 	seq: number;
@@ -77,6 +79,7 @@ export interface MessagePushPayload {
 
 export interface PresencePushPayload {
 	agentId: string;
+	displayName?: string;
 	status: "joined" | "left";
 }
 

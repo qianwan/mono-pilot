@@ -26,6 +26,7 @@ type PushFn = (method: string, payload: unknown) => void;
 
 interface ConnectedAgent {
 	agentId: string;
+	displayName?: string;
 	push: PushFn;
 	channels: Set<string>;
 }
@@ -34,7 +35,7 @@ const agents = new Map<string, ConnectedAgent>();
 let messageSeq = 0;
 
 function broadcastPresence(agentId: string, status: "joined" | "left", exclude?: string): void {
-	const payload: PresencePushPayload = { agentId, status };
+	const payload: PresencePushPayload = { agentId, displayName: agents.get(agentId)?.displayName, status };
 	for (const [id, agent] of agents) {
 		if (id !== exclude) agent.push("presence", payload);
 	}
@@ -48,18 +49,23 @@ function socketPush(socket: import("node:net").Socket): PushFn {
 	};
 }
 
-function registerAgent(agentId: string, push: PushFn, channels?: string[]): string[] {
+function registerAgent(agentId: string, push: PushFn, channels?: string[], displayName?: string): string[] {
 	const existing = agents.get(agentId);
 	if (existing) existing.push = () => {};
 
 	const defaultChannels = ["public", `private:${agentId}`];
 	const allChannels = [...defaultChannels, ...(channels ?? [])];
-	agents.set(agentId, { agentId, push, channels: new Set(allChannels) });
+	agents.set(agentId, { agentId, displayName, push, channels: new Set(allChannels) });
 	clusterLog.info("agent registered", { agentId, channels: allChannels });
 
 	broadcastPresence(agentId, "joined", agentId);
-	for (const [id] of agents) {
-		if (id !== agentId) push("presence", { agentId: id, status: "joined" } satisfies PresencePushPayload);
+	for (const [id, existing] of agents) {
+		if (id !== agentId) {
+					push(
+						"presence",
+						{ agentId: id, displayName: existing.displayName, status: "joined" } satisfies PresencePushPayload,
+					);
+		}
 	}
 	return allChannels;
 }
@@ -73,9 +79,9 @@ export function createBusHandler(): ServiceHandler {
 		async handle(req, ctx) {
 			switch (req.method) {
 				case "register": {
-					const { agentId, channels } = req.params as RegisterParams;
+					const { agentId, channels, displayName } = req.params as RegisterParams;
 					if (!agentId) { ctx.respond({ error: "register requires agentId" }); return; }
-					const allChannels = registerAgent(agentId, socketPush(ctx.socket), channels);
+					const allChannels = registerAgent(agentId, socketPush(ctx.socket), channels, displayName);
 					ctx.setRegisteredId(agentId);
 					ctx.respond({ result: { agentId, channels: allChannels } });
 					return;
@@ -98,7 +104,16 @@ export function createBusHandler(): ServiceHandler {
 					const target = agents.get(to);
 					if (!target) { ctx.respond({ error: `agent not found: ${to}` }); return; }
 					const seq = ++messageSeq;
-					target.push("message", { from: registeredId, channel, payload, seq } satisfies MessagePushPayload);
+					target.push(
+						"message",
+						{
+							from: registeredId,
+							fromName: agents.get(registeredId)?.displayName,
+							channel,
+							payload,
+							seq,
+						} satisfies MessagePushPayload,
+					);
 					clusterLog.debug("send", { from: registeredId, to, seq });
 					ctx.respond({ result: { seq } });
 					return;
@@ -109,7 +124,14 @@ export function createBusHandler(): ServiceHandler {
 					const { channel, payload } = req.params as BroadcastParams;
 					const targetChannel = channel ?? "public";
 					const seq = ++messageSeq;
-					const pushPayload: MessagePushPayload = { from: registeredId, channel: targetChannel, payload, seq };
+					const fromName = agents.get(registeredId)?.displayName;
+					const pushPayload: MessagePushPayload = {
+					from: registeredId,
+					fromName,
+					channel: targetChannel,
+					payload,
+					seq,
+					};
 					let delivered = 0;
 					for (const [id, agent] of agents) {
 						if (id === registeredId) continue;
@@ -125,6 +147,7 @@ export function createBusHandler(): ServiceHandler {
 				case "roster": {
 					const roster = [...agents.entries()].map(([id, a]) => ({
 						agentId: id,
+						displayName: a.displayName,
 						channels: [...a.channels],
 					}));
 					ctx.respond({ result: { agents: roster } });
@@ -143,7 +166,7 @@ export function createBusHandler(): ServiceHandler {
 
 // --- Leader loopback: in-process BusHandle without socket ---
 
-export function createLeaderBus(agentId: string): BusHandle {
+export function createLeaderBus(agentId: string, displayName?: string): BusHandle {
 	let messageHandlers: MessageHandler[] = [];
 	let presenceHandlers: PresenceHandler[] = [];
 	let closed = false;
@@ -157,21 +180,30 @@ export function createLeaderBus(agentId: string): BusHandle {
 		}
 	};
 
-	registerAgent(agentId, push);
+	registerAgent(agentId, push, undefined, displayName);
 
 	return {
 		async send(to, payload, channel) {
 			const target = agents.get(to);
 			if (!target) throw new Error(`agent not found: ${to}`);
 			const seq = ++messageSeq;
-			target.push("message", { from: agentId, channel, payload, seq } satisfies MessagePushPayload);
+			target.push(
+				"message",
+				{ from: agentId, fromName: agents.get(agentId)?.displayName, channel, payload, seq } satisfies MessagePushPayload,
+			);
 			clusterLog.debug("send (leader)", { from: agentId, to, seq });
 			return { seq };
 		},
 		async broadcast(payload, channel) {
 			const targetChannel = channel ?? "public";
 			const seq = ++messageSeq;
-			const pushPayload: MessagePushPayload = { from: agentId, channel: targetChannel, payload, seq };
+			const pushPayload: MessagePushPayload = {
+				from: agentId,
+				fromName: agents.get(agentId)?.displayName,
+				channel: targetChannel,
+				payload,
+				seq,
+			};
 			let delivered = 0;
 			for (const [id, agent] of agents) {
 				if (id === agentId) continue;
@@ -189,7 +221,34 @@ export function createLeaderBus(agentId: string): BusHandle {
 			return { channels: entry ? [...entry.channels] : [] };
 		},
 		async roster() {
-			return { agents: [...agents.entries()].map(([id, a]) => ({ agentId: id, channels: [...a.channels] })) };
+			return {
+				agents: [...agents.entries()].map(([id, a]) => ({
+					agentId: id,
+					displayName: a.displayName,
+					channels: [...a.channels],
+				})),
+			};
+		},
+		async resolveTarget(target) {
+			const { agents } = await this.roster();
+			const byId = agents.find((agent) => agent.agentId === target);
+			if (byId) return { agentId: byId.agentId, displayName: byId.displayName };
+
+			const matches = agents.filter(
+				(agent) => agent.displayName?.trim() && agent.displayName.trim() === target,
+			);
+			if (matches.length === 1) {
+				return { agentId: matches[0].agentId, displayName: matches[0].displayName };
+			}
+
+			if (matches.length === 0) {
+				throw new Error(`No agent found for "${target}". Use /bus who to list agents.`);
+			}
+
+			const ids = matches.map((agent) => agent.agentId).join(", ");
+			throw new Error(
+				`DisplayName "${target}" is not unique. Candidates: ${ids}. Use agentId instead.`,
+			);
 		},
 		onMessage(handler) { messageHandlers.push(handler); },
 		onPresence(handler) { presenceHandlers.push(handler); },
