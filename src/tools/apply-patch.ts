@@ -16,7 +16,7 @@ const END_OF_FILE = "*** End of File";
 const MAX_RENDER_SUMMARY_PATH_CHARS = 96;
 const MAX_RENDER_FIRST_CHANGED_LINES = 12;
 
-const DESCRIPTION = readFileSync(fileURLToPath(new URL("./shell-description.md", import.meta.url)), "utf-8").trim();
+const DESCRIPTION = readFileSync(fileURLToPath(new URL("./apply-patch-description.md", import.meta.url)), "utf-8").trim();
 
 const applyPatchSchema = Type.Object({
 	patch: Type.String({
