@@ -11,7 +11,7 @@ const DESCRIPTION = `Search for symbols (functions, classes, interfaces, etc.) a
 - Provide a partial or full symbol name to search for
 - Returns up to 10 matching symbols with their kind and file location
 - Results formatted as: name (kind) relative/path/to/file.ts:line
-- Supported languages: TypeScript/JavaScript, Python (Pyright), Go (gopls), Rust (rust-analyzer)`;
+- Supported languages: TypeScript/JavaScript, Python (Pyright), Go (gopls), Rust (rust-analyzer), Swift (sourcekit-lsp)`;
 
 const KIND_NAMES: Record<number, string> = {
   5: "class",

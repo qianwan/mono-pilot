@@ -10,7 +10,7 @@ const DESCRIPTION = `Get LSP diagnostics (type errors, warnings, hints) for a sp
 - Results formatted as: SEVERITY [line:col] message
 - Returns "No diagnostics." if the file has no issues
 - Language server is started automatically on first use
-- Supported languages: TypeScript/JavaScript, Python (Pyright), Go (gopls), Rust (rust-analyzer)`;
+- Supported languages: TypeScript/JavaScript, Python (Pyright), Go (gopls), Rust (rust-analyzer), Swift (sourcekit-lsp)`;
 
 const schema = Type.Object({
   file: Type.String({

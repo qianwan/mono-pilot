@@ -38,6 +38,20 @@ export namespace LSPServer {
     }
   }
 
+  function xcrunFind(cmd: string): string | undefined {
+    if (process.platform !== "darwin") return undefined;
+    try {
+      return execSync(`xcrun --find ${cmd}`, {
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "pipe"],
+      })
+        .trim()
+        .split("\n")[0] || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function npmInstall(...pkgs: string[]): Promise<void> {
     await fs.mkdir(binDir, { recursive: true });
     await new Promise<void>((resolve, reject) => {
@@ -226,6 +240,20 @@ export namespace LSPServer {
       const bin = which("rust-analyzer");
       if (!bin) {
         log.error("rust-analyzer not found. Install with: rustup component add rust-analyzer");
+        return;
+      }
+      return { process: spawn(bin, { cwd: root }) };
+    },
+  };
+
+  export const SourcekitLsp: Info = {
+    id: "sourcekit-lsp",
+    extensions: [".swift"],
+    root: NearestRoot(["Package.swift"]),
+    async spawn(root) {
+      const bin = which("sourcekit-lsp") ?? xcrunFind("sourcekit-lsp");
+      if (!bin) {
+        log.error("sourcekit-lsp not found. Install with Xcode or a Swift toolchain.");
         return;
       }
       return { process: spawn(bin, { cwd: root }) };

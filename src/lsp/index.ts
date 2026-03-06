@@ -26,6 +26,7 @@ export namespace LSP {
           pyright: LSPServer.Pyright,
           gopls: LSPServer.Gopls,
           rust: LSPServer.RustAnalyzer,
+          sourcekit: LSPServer.SourcekitLsp,
           clangd: LSPServer.Clangd,
         },
         broken: new Set(),
