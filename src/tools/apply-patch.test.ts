@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { alignReplacement } from "./apply-patch.js";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { alignReplacement, applyPatchToFilesystem } from "./apply-patch.js";
+
+const fixtureRoot = fileURLToPath(new URL("./apply-patch-fixtures", import.meta.url));
+const fixtureOriginal = resolve(fixtureRoot, "original.md");
+const fixturePatches = resolve(fixtureRoot, "patches");
+const fixtureExpected = resolve(fixtureRoot, "expected");
+const PATCH_TARGET = "{{FILE}}";
 
 describe("ApplyPatch Robustness - alignReplacement", () => {
 	it("should align 2-space indentation to tabs", () => {
@@ -112,4 +122,51 @@ describe("ApplyPatch Robustness - alignReplacement", () => {
 		expect(result?.oldText).toBe("  foo();");
 		expect(result?.newText).toBe("  bar();");
 	});
+});
+
+describe("ApplyPatch fixtures", () => {
+	const cases = [
+		{
+			name: "context-only",
+			patch: "00-context-only.patch",
+			expected: "00-context-only.md",
+		},
+		{
+			name: "line-hint",
+			patch: "01-line-hint.patch",
+			expected: "01-line-hint.md",
+		},
+		{
+			name: "line-range",
+			patch: "02-line-range.patch",
+			expected: "02-line-range.md",
+		},
+		{
+			name: "diff-header",
+			patch: "03-diff-header.patch",
+			expected: "03-diff-header.md",
+		},
+	];
+
+	for (const entry of cases) {
+		it(`applies fixture patch: ${entry.name}`, async () => {
+			const tempDir = await mkdtemp(`${tmpdir()}/apply-patch-fixture-`);
+			const targetPath = resolve(tempDir, "target.md");
+			const original = await readFile(fixtureOriginal, "utf-8");
+			await writeFile(targetPath, original, "utf-8");
+
+			const patchTemplate = await readFile(resolve(fixturePatches, entry.patch), "utf-8");
+			const patchText = patchTemplate.replaceAll(PATCH_TARGET, targetPath);
+
+			await applyPatchToFilesystem({
+				patchText,
+				cwd: tempDir,
+				toolCallId: "fixture",
+			});
+
+			const expected = await readFile(resolve(fixtureExpected, entry.expected), "utf-8");
+			const actual = await readFile(targetPath, "utf-8");
+			expect(actual).toBe(expected);
+		});
+	}
 });

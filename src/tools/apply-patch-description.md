@@ -33,6 +33,12 @@ For instructions on [context_before] and [context_after]:
 + [new_code]
 [3 lines of post-context]
 
+You can optionally anchor a hunk to a line number (1-based) to reduce ambiguity. Supported forms:
+@@ -42,5 +42,6 @@
+@@ line 42
+@@ line: 42-60
+The line hint is a search hint; context headers still apply if provided.
+
 The full grammar definition is below:
 Patch := Begin { FileOp } End
 Begin := "*** Begin Patch" NEWLINE

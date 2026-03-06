@@ -36,6 +36,7 @@ interface AddFileOperation {
 interface UpdateHunk {
 	headers: string[];
 	lines: string[];
+	lineHint?: LineHint;
 }
 
 interface UpdateFileOperation {
@@ -47,11 +48,16 @@ interface UpdateFileOperation {
 
 type PatchOperation = AddFileOperation | UpdateFileOperation;
 
+interface LineHint {
+	startLine?: number;
+	endLine?: number;
+}
+
 interface ParseResult {
 	operation: PatchOperation;
 }
 
-interface ApplyPatchDetails {
+export interface ApplyPatchDetails {
 	operation: "add" | "update";
 	path: string;
 	moveTo?: string;
@@ -224,15 +230,18 @@ function parseUpdateFile(lines: string[], startIndex: number): { operation: Upda
 	const hunks: UpdateHunk[] = [];
 	let currentHeaders: string[] | undefined;
 	let currentLines: string[] = [];
+	let currentLineHint: LineHint | undefined;
 
 	const flushCurrentHunk = () => {
 		if (!currentHeaders) return;
 		hunks.push({
 			headers: currentHeaders,
 			lines: currentLines,
+			lineHint: currentLineHint,
 		});
 		currentHeaders = undefined;
 		currentLines = [];
+		currentLineHint = undefined;
 	};
 
 	while (i < lines.length && lines[i] !== END_PATCH) {
@@ -242,14 +251,18 @@ function parseUpdateFile(lines: string[], startIndex: number): { operation: Upda
 			break;
 		}
 		if (line.startsWith("@@")) {
+			const { headerText, lineHint } = parseHunkHeaderLine(line);
 			if (!currentHeaders) {
-				currentHeaders = [line];
-			} else if (currentLines.length === 0) {
-				// Support multiple consecutive @@ headers to narrow context.
-				currentHeaders.push(line);
-			} else {
+				currentHeaders = [];
+			} else if (currentLines.length > 0) {
 				flushCurrentHunk();
-				currentHeaders = [line];
+				currentHeaders = [];
+			}
+			if (headerText) {
+				currentHeaders.push(headerText);
+			}
+			if (lineHint && !currentLineHint) {
+				currentLineHint = lineHint;
 			}
 			i++;
 			continue;
@@ -352,6 +365,59 @@ function parseFirstChangedLine(details: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) ? value : undefined;
 }
 
+function toZeroBasedLine(line: number): number {
+	return Math.max(0, line - 1);
+}
+
+function parseDiffHeader(header: string): { headerText?: string; lineHint?: LineHint } | null {
+	const match = header.match(/^-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(?:\s+(.*))?$/);
+	if (!match) return null;
+
+	const oldStart = Number(match[1]);
+	const oldCount = match[2] ? Number(match[2]) : undefined;
+	const contextText = match[5]?.trim();
+	if (!Number.isInteger(oldStart) || oldStart <= 0) {
+		return {
+			headerText: contextText || undefined,
+		};
+	}
+
+	const startLine = toZeroBasedLine(oldStart);
+	const endLine = oldCount && oldCount > 0 ? startLine + oldCount - 1 : undefined;
+
+	return {
+		lineHint: { startLine, endLine },
+		headerText: contextText || undefined,
+	};
+}
+
+function parseLineDirective(header: string): { lineHint: LineHint } | null {
+	const match = header.match(/^line\s*(?::|=)?\s*(\d+)(?:\s*(?:-|\.\.)\s*(\d+))?$/i);
+	if (!match) return null;
+
+	const start = Number(match[1]);
+	if (!Number.isInteger(start) || start <= 0) return null;
+
+	const end = match[2] ? Number(match[2]) : undefined;
+	const startLine = toZeroBasedLine(start);
+	const endLine = end && end >= start ? toZeroBasedLine(end) : undefined;
+
+	return { lineHint: { startLine, endLine } };
+}
+
+function parseHunkHeaderLine(line: string): { headerText?: string; lineHint?: LineHint } {
+	const header = line.replace(/^@@/, "").trim();
+	if (!header) return {};
+
+	const diffParsed = parseDiffHeader(header);
+	if (diffParsed) return diffParsed;
+
+	const lineParsed = parseLineDirective(header);
+	if (lineParsed) return lineParsed;
+
+	return { headerText: header };
+}
+
 function normalizeHeaderText(header: string): string | undefined {
 	const trimmed = header.replace(/^@@/, "").trim();
 	return trimmed.length > 0 ? trimmed : undefined;
@@ -452,6 +518,131 @@ export function alignReplacement(
 	return null;
 }
 
+export async function applyPatchToFilesystem(options: {
+	patchText: string;
+	cwd: string;
+	toolCallId?: string;
+	signal?: AbortSignal;
+}): Promise<{ summary: string; details: ApplyPatchDetails }> {
+	const toolCallId = options.toolCallId ?? "apply-patch";
+	const parsed = parsePatchDocument(options.patchText);
+	const patchLineCount = getNormalizedPatchLines(options.patchText).length;
+	const normalizedPatchText = normalizeLineEndings(options.patchText);
+	const writeTool = createWriteTool(options.cwd);
+	const editTool = createEditTool(options.cwd);
+
+	if (parsed.operation.kind === "add") {
+		const content = parsed.operation.lines.join("\n");
+		await writeTool.execute(
+			`${toolCallId}:add`,
+			{
+				path: parsed.operation.path,
+				content,
+			},
+			options.signal,
+		);
+
+		const details: ApplyPatchDetails = {
+			operation: "add",
+			path: parsed.operation.path,
+			bytesWritten: Buffer.byteLength(content, "utf-8"),
+			patchLineCount,
+			patchText: normalizedPatchText,
+		};
+		return {
+			summary: `Applied patch: added ${parsed.operation.path}`,
+			details,
+		};
+	}
+
+	const firstChangedLines: number[] = [];
+	let appliedHunks = 0;
+	let noopHunks = 0;
+	for (let i = 0; i < parsed.operation.hunks.length; i++) {
+		const hunk = parsed.operation.hunks[i];
+		if (!hunkHasChanges(hunk)) {
+			noopHunks++;
+			continue;
+		}
+
+		let { oldText, newText } = buildReplacementTexts(hunk);
+		if (oldText === newText) {
+			noopHunks++;
+			continue;
+		}
+
+		const absolutePath = isAbsolute(parsed.operation.path)
+			? parsed.operation.path
+			: resolve(options.cwd, parsed.operation.path);
+
+		if (existsSync(absolutePath)) {
+			try {
+				const fileContent = readFileSync(absolutePath, "utf-8");
+				const headerStart = findHeaderSearchStart(fileContent, hunk.headers);
+				const startLine = hunk.lineHint?.startLine ?? headerStart;
+				const endLine = hunk.lineHint?.endLine;
+				const alignOptions =
+					startLine !== undefined || endLine !== undefined ? { startLine, endLine } : undefined;
+				const aligned = alignReplacement(fileContent, oldText, newText, alignOptions);
+				if (aligned) {
+					oldText = aligned.oldText;
+					newText = aligned.newText;
+				}
+			} catch {
+				// Ignore read errors, let editTool handle it
+			}
+		}
+
+		const result = await editTool.execute(
+			`${toolCallId}:hunk:${i + 1}`,
+			{
+				path: parsed.operation.path,
+				oldText,
+				newText,
+			},
+			options.signal,
+		);
+		appliedHunks++;
+		const firstChangedLine = parseFirstChangedLine(result.details);
+		if (firstChangedLine !== undefined) {
+			firstChangedLines.push(firstChangedLine);
+		}
+	}
+
+	let movedTo: string | undefined;
+	if (parsed.operation.moveTo && parsed.operation.moveTo !== parsed.operation.path) {
+		await mkdir(dirname(parsed.operation.moveTo), { recursive: true });
+		await rename(parsed.operation.path, parsed.operation.moveTo);
+		movedTo = parsed.operation.moveTo;
+	}
+
+	const details: ApplyPatchDetails = {
+		operation: "update",
+		path: parsed.operation.path,
+		moveTo: movedTo,
+		hunkCount: parsed.operation.hunks.length,
+		appliedHunks,
+		noopHunks,
+		firstChangedLines,
+		patchLineCount,
+		patchText: normalizedPatchText,
+	};
+
+	const suffix: string[] = [];
+	if (noopHunks > 0) {
+		suffix.push(`skipped ${noopHunks} no-op hunk(s)`);
+	}
+	if (movedTo) {
+		suffix.push(`moved to ${movedTo}`);
+	}
+	const suffixText = suffix.length > 0 ? ` (${suffix.join(", ")})` : "";
+
+	return {
+		summary: `Applied patch: updated ${parsed.operation.path} with ${appliedHunks} hunk(s)${suffixText}.`,
+		details,
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	// System prompt injection is handled centrally by system-prompt extension.
 
@@ -487,126 +678,15 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		async execute(toolCallId, params: ApplyPatchInput, signal, _onUpdate, ctx) {
-			const parsed = parsePatchDocument(params.patch);
-			const patchLineCount = getNormalizedPatchLines(params.patch).length;
-			const patchText = normalizeLineEndings(params.patch);
-			const writeTool = createWriteTool(ctx.cwd);
-			const editTool = createEditTool(ctx.cwd);
-
-			if (parsed.operation.kind === "add") {
-				const content = parsed.operation.lines.join("\n");
-				await writeTool.execute(
-					`${toolCallId}:add`,
-					{
-						path: parsed.operation.path,
-						content,
-					},
-					signal,
-				);
-
-				const details: ApplyPatchDetails = {
-					operation: "add",
-					path: parsed.operation.path,
-					bytesWritten: Buffer.byteLength(content, "utf-8"),
-					patchLineCount,
-					patchText,
-				};
-				return {
-					content: [{ type: "text", text: `Applied patch: added ${parsed.operation.path}` }],
-					details,
-				};
-			}
-
-			const firstChangedLines: number[] = [];
-			let appliedHunks = 0;
-			let noopHunks = 0;
-			for (let i = 0; i < parsed.operation.hunks.length; i++) {
-				const hunk = parsed.operation.hunks[i];
-				if (!hunkHasChanges(hunk)) {
-					noopHunks++;
-					continue;
-				}
-				
-				let { oldText, newText } = buildReplacementTexts(hunk);
-				if (oldText === newText) {
-					noopHunks++;
-					continue;
-				}
-				
-				const absolutePath = isAbsolute(parsed.operation.path)
-					? parsed.operation.path
-					: resolve(ctx.cwd, parsed.operation.path);
-					
-				if (existsSync(absolutePath)) {
-					try {
-						const fileContent = readFileSync(absolutePath, "utf-8");
-						const headerStart = findHeaderSearchStart(fileContent, hunk.headers);
-						const aligned = alignReplacement(
-							fileContent,
-							oldText,
-							newText,
-							headerStart !== undefined ? { startLine: headerStart } : undefined,
-						);
-						if (aligned) {
-							oldText = aligned.oldText;
-							newText = aligned.newText;
-						}
-					} catch {
-						// Ignore read errors, let editTool handle it
-					}
-				}
-				
-				const result = await editTool.execute(
-					`${toolCallId}:hunk:${i + 1}`,
-					{
-						path: parsed.operation.path,
-						oldText,
-						newText,
-					},
-					signal,
-				);
-				appliedHunks++;
-				const firstChangedLine = parseFirstChangedLine(result.details);
-				if (firstChangedLine !== undefined) {
-					firstChangedLines.push(firstChangedLine);
-				}
-			}
-
-			let movedTo: string | undefined;
-			if (parsed.operation.moveTo && parsed.operation.moveTo !== parsed.operation.path) {
-				await mkdir(dirname(parsed.operation.moveTo), { recursive: true });
-				await rename(parsed.operation.path, parsed.operation.moveTo);
-				movedTo = parsed.operation.moveTo;
-			}
-
-			const details: ApplyPatchDetails = {
-				operation: "update",
-				path: parsed.operation.path,
-				moveTo: movedTo,
-				hunkCount: parsed.operation.hunks.length,
-				appliedHunks,
-				noopHunks,
-				firstChangedLines,
-				patchLineCount,
-				patchText,
-			};
-
-			const suffix: string[] = [];
-			if (noopHunks > 0) {
-				suffix.push(`skipped ${noopHunks} no-op hunk(s)`);
-			}
-			if (movedTo) {
-				suffix.push(`moved to ${movedTo}`);
-			}
-			const suffixText = suffix.length > 0 ? ` (${suffix.join(", ")})` : "";
+			const { summary, details } = await applyPatchToFilesystem({
+				patchText: params.patch,
+				cwd: ctx.cwd,
+				toolCallId,
+				signal,
+			});
 
 			return {
-				content: [
-					{
-						type: "text",
-						text: `Applied patch: updated ${parsed.operation.path} with ${appliedHunks} hunk(s)${suffixText}.`,
-					},
-				],
+				content: [{ type: "text", text: summary }],
 				details,
 			};
 		},
