@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { extname } from "node:path";
 import { Text } from "@mariozechner/pi-tui";
 import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
@@ -20,6 +20,7 @@ Requirements:
 Inputs:
 - \`prompt\` is required.
 - \`image_path\` or \`image_base64\` (with \`image_mime_type\`) are optional for image editing.
+- \`output_path\` is optional to save the first generated image.
 
 Outputs:
 - Returns text parts (if any) and one or more image parts.
@@ -48,6 +49,11 @@ const generateImageSchema = Type.Object({
 			description: "MIME type for image_base64 (e.g., image/png).",
 		}),
 	),
+	output_path: Type.Optional(
+		Type.String({
+			description: "Optional output path to save the first generated image.",
+		}),
+	),
 });
 
 type GenerateImageInput = Static<typeof generateImageSchema>;
@@ -59,6 +65,8 @@ interface GenerateImageDetails {
 	input_image_ref?: string;
 	input_image_source?: "path" | "base64";
 	input_image_mime_type?: string;
+	output_image_path?: string;
+	output_image_written?: boolean;
 	image_count?: number;
 	text_count?: number;
 	used_input_image?: boolean;
@@ -256,6 +264,10 @@ function collectOpenRouterParts(message: Record<string, unknown>): {
 	return { content, imageCount, textCount };
 }
 
+function findFirstImage(content: Array<TextContent | ImageContent>): ImageContent | undefined {
+	return content.find((entry): entry is ImageContent => entry.type === "image");
+}
+
 function buildOpenRouterMessages(
 	prompt: string,
 	parts: Array<Record<string, unknown>>,
@@ -335,6 +347,14 @@ export default function generateImageExtension(pi: ExtensionAPI) {
 				(entry): entry is TextContent => entry.type === "text" && typeof entry.text === "string",
 			);
 			if (!expanded) {
+				if (details.output_image_written && details.output_image_path) {
+					const summary = `saved: ${details.output_image_path}`;
+					return new Text(
+						theme.fg("muted", `${summary} (click or ${keyHint("expandTools", "to expand")})`),
+						0,
+						0,
+					);
+				}
 				const imageCount = result.content.filter((entry) => entry.type === "image").length;
 				const summary = `${imageCount} image${imageCount === 1 ? "" : "s"}`;
 				return new Text(theme.fg("muted", `${summary} (click or ${keyHint("expandTools", "to expand")})`), 0, 0);
@@ -348,6 +368,10 @@ export default function generateImageExtension(pi: ExtensionAPI) {
 			}
 			if (details.input_image_ref) {
 				lines.push(theme.fg("muted", `input image: ${details.input_image_ref}`));
+			}
+			if (details.output_image_path) {
+				const suffix = details.output_image_written === false ? " (failed)" : "";
+				lines.push(theme.fg("muted", `output image: ${details.output_image_path}${suffix}`));
 			}
 			if (details.provider) {
 				lines.push(theme.fg("muted", `provider: ${details.provider}`));
@@ -363,6 +387,7 @@ export default function generateImageExtension(pi: ExtensionAPI) {
 				input_image_ref: inputImageInfo.ref,
 				input_image_source: inputImageInfo.source,
 				input_image_mime_type: inputImageInfo.mimeType,
+				output_image_path: params.output_path,
 			};
 			let config: Record<string, unknown> = {};
 			try {
@@ -565,11 +590,48 @@ export default function generateImageExtension(pi: ExtensionAPI) {
 					};
 				}
 
+				let outputWritten: boolean | undefined;
+				if (params.output_path) {
+					const image = findFirstImage(collected.content);
+					if (image) {
+						try {
+								writeFileSync(params.output_path, Buffer.from(image.data, "base64"));
+								outputWritten = true;
+						} catch (error) {
+								const message = error instanceof Error ? error.message : String(error);
+								return {
+								content: [{ type: "text", text: `GenerateImage error: ${message}` }, ...collected.content],
+								details: {
+									model,
+									...baseDetails,
+									output_image_written: false,
+									image_count: collected.imageCount,
+									text_count: collected.textCount,
+									used_input_image: usedInput || undefined,
+									response: JSON.stringify(payload),
+									error: message,
+									...apiKeyInfo,
+								} satisfies GenerateImageDetails,
+								};
+						}
+					} else {
+						outputWritten = false;
+					}
+				}
+
+				const outputContent: Array<TextContent | ImageContent> =
+					outputWritten && params.output_path
+						? [
+								({ type: "text", text: `GenerateImage saved: ${params.output_path}` } satisfies TextContent),
+								...collected.content.filter((entry): entry is TextContent => entry.type === "text"),
+						  ]
+						: collected.content;
 				return {
-					content: collected.content,
+					content: outputContent,
 					details: {
 						model,
 						...baseDetails,
+						output_image_written: outputWritten,
 						image_count: collected.imageCount,
 						text_count: collected.textCount,
 						used_input_image: usedInput || undefined,
