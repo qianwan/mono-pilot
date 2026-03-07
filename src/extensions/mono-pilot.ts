@@ -9,6 +9,7 @@ import deleteExtension from "../tools/delete.js";
 import semanticSearchExtension from "../tools/semantic-search.js";
 import webSearchExtension from "../tools/web-search.js";
 import webFetchExtension from "../tools/web-fetch.js";
+import generateImageExtension from "../tools/generate-image.js";
 import askQuestionExtension from "../tools/ask-question.js";
 import subagentExtension from "../tools/subagent.js";
 import listMcpResourcesExtension from "../tools/list-mcp-resources.js";
@@ -30,6 +31,8 @@ import mailboxExtension from "../tools/mailbox.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
 import { registerBuildMemoryCommand } from "./commands/build-memory.js";
 import { registerBusCommands, setBusHandle } from "./commands/bus.js";
+import { registerImageModelCommands } from "./commands/image-model.js";
+import { registerSftpCommands } from "./sftp.js";
 import { initSubsystems, shutdownSubsystems, type SubsystemHandles } from "./lifecycle.js";
 
 const toolExtensions: ExtensionFactory[] = [
@@ -42,6 +45,7 @@ const toolExtensions: ExtensionFactory[] = [
 	semanticSearchExtension,
 	webSearchExtension,
 	webFetchExtension,
+	generateImageExtension,
 	askQuestionExtension,
 	subagentExtension,
 	listMcpResourcesExtension,
@@ -70,6 +74,8 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	registerSessionMemoryHook(pi);
 	registerBuildMemoryCommand(pi);
 	registerBusCommands(pi);
+	registerImageModelCommands(pi);
+	registerSftpCommands(pi);
 
 	let handles: SubsystemHandles | null = null;
 

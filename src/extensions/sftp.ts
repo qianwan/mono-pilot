@@ -2,8 +2,9 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-export interface SftpTargetConfig {
+interface SftpTargetConfig {
 	name?: string;
 	protocol?: string;
 	host: string;
@@ -18,10 +19,17 @@ export interface SftpTargetConfig {
 	interactiveAuth?: boolean;
 }
 
-export interface SftpSyncDetails {
+interface SftpSyncDetails {
 	targets: string[];
 	uploaded: number;
 	errors?: string[];
+}
+
+interface ApplyPatchResultDetails {
+	operation: "add" | "update";
+	path: string;
+	moveTo?: string;
+	appliedHunks?: number;
 }
 
 interface SftpClientInstance {
@@ -41,6 +49,8 @@ interface CachedSftpConnection {
 	ready: boolean;
 	connecting?: Promise<void>;
 }
+
+type OtpProvider = () => Promise<string | null>;
 
 const connectionCache = new Map<string, CachedSftpConnection>();
 
@@ -119,15 +129,19 @@ function getTargetCacheKey(target: SftpTargetConfig): string {
 	return target.name ?? target.host;
 }
 
-export function isSftpAuthFailure(errors?: string[]): boolean {
+function shouldRetryInteractiveAuth(errors?: string[]): boolean {
 	if (!errors || errors.length === 0) return false;
 	return errors.some((err) => {
 		const text = err.toLowerCase();
-		return text.includes("authentication methods failed") || text.includes("authentication failed");
+		return (
+			text.includes("authentication methods failed") ||
+			text.includes("authentication failed") ||
+			text.includes("timed out while waiting for handshake")
+		);
 	});
 }
 
-export function hasSftpConnection(target: SftpTargetConfig): boolean {
+function hasSftpConnection(target: SftpTargetConfig): boolean {
 	const entry = connectionCache.get(getTargetCacheKey(target));
 	return Boolean(entry?.ready);
 }
@@ -182,7 +196,8 @@ async function createSftpClient(): Promise<SftpClientInstance> {
 
 async function getOrCreateConnection(options: {
 	target: SftpTargetConfig;
-	otp?: string;
+	otp?: string | null;
+	otpProvider?: OtpProvider;
 	requireExisting?: boolean;
 }): Promise<SftpClientInstance> {
 	const key = getTargetCacheKey(options.target);
@@ -205,10 +220,32 @@ async function getOrCreateConnection(options: {
 	}
 	if (!entry.connecting) {
 		entry.connecting = (async () => {
-			if (options.target.interactiveAuth) {
-				if (options.otp) {
-					attachOtpHandler(entry.client, options.otp);
-				}
+			if (options.target.interactiveAuth && (options.otp || options.otpProvider)) {
+				let resolvedOtp: string | null | undefined = options.otp ?? undefined;
+				let otpPromise: Promise<string | null> | null = null;
+				const resolveOtp = async () => {
+					if (resolvedOtp !== undefined) {
+						return resolvedOtp;
+					}
+					if (!options.otpProvider) {
+						resolvedOtp = null;
+						return resolvedOtp;
+					}
+					if (!otpPromise) {
+						otpPromise = options.otpProvider();
+					}
+					resolvedOtp = await otpPromise;
+					return resolvedOtp;
+				};
+				entry.client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+					void (async () => {
+						const otp = await resolveOtp();
+						const answers = (Array.isArray(prompts) ? prompts : []).map(() => otp ?? "");
+						if (typeof finish === "function") {
+							finish(answers);
+						}
+					})();
+				});
 			}
 			await entry.client.connect(buildConnectConfig(options.target));
 			entry.ready = true;
@@ -221,7 +258,7 @@ async function getOrCreateConnection(options: {
 	return entry.client;
 }
 
-export async function loadSftpTargets(cwd: string): Promise<SftpTargetConfig[]> {
+async function loadSftpTargets(cwd: string): Promise<SftpTargetConfig[]> {
 	const configPath = resolve(cwd, ".vscode/sftp.json");
 	if (!existsSync(configPath)) {
 		return [];
@@ -241,12 +278,13 @@ export async function loadSftpTargets(cwd: string): Promise<SftpTargetConfig[]> 
 		.filter((entry) => entry.uploadOnSave !== false);
 }
 
-export async function syncSftpFile(options: {
+async function syncSftpFile(options: {
 	cwd: string;
 	localPath: string;
 	targets: SftpTargetConfig[];
 	requireExisting?: boolean;
-	otp?: string;
+	otp?: string | null;
+	otpProvider?: OtpProvider;
 }): Promise<SftpSyncDetails> {
 	const targets = options.targets;
 	const labels = targets.map((target) => describeTarget(target));
@@ -280,6 +318,7 @@ export async function syncSftpFile(options: {
 				target,
 				requireExisting: options.requireExisting,
 				otp: options.otp,
+				otpProvider: options.otpProvider,
 			});
 			await client.mkdir(posix.dirname(remotePath), true);
 			await client.put(localAbsolute, remotePath);
@@ -297,12 +336,99 @@ export async function syncSftpFile(options: {
 	};
 }
 
-export async function uploadSftpPath(options: {
+function isApplyPatchResultDetails(value: unknown): value is ApplyPatchResultDetails {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const operation = value.operation;
+	if (operation !== "add" && operation !== "update") {
+		return false;
+	}
+
+	if (typeof value.path !== "string" || value.path.trim().length === 0) {
+		return false;
+	}
+
+	if (value.moveTo !== undefined && typeof value.moveTo !== "string") {
+		return false;
+	}
+
+	if (value.appliedHunks !== undefined && typeof value.appliedHunks !== "number") {
+		return false;
+	}
+
+	return true;
+}
+
+function shouldSyncForApplyPatch(details: ApplyPatchResultDetails): boolean {
+	if (details.operation === "add") {
+		return true;
+	}
+	if (details.moveTo) {
+		return true;
+	}
+	return typeof details.appliedHunks === "number" && details.appliedHunks > 0;
+}
+
+async function maybeSyncApplyPatchResult(
+	cwd: string,
+	details: ApplyPatchResultDetails,
+	context?: ExtensionContext,
+): Promise<SftpSyncDetails | undefined> {
+	if (!shouldSyncForApplyPatch(details)) {
+		return undefined;
+	}
+
+	let targets: SftpTargetConfig[];
+	try {
+		targets = await loadSftpTargets(cwd);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			targets: [],
+			uploaded: 0,
+			errors: [message],
+		};
+	}
+
+	if (targets.length === 0) {
+		return undefined;
+	}
+
+	const preferredTarget = selectedTargetId ? pickTarget(targets, selectedTargetId) : undefined;
+	if (selectedTargetId && !preferredTarget) {
+		return {
+			targets: targets.map((target) => describeTarget(target)),
+			uploaded: 0,
+			errors: [`selected target not found: ${selectedTargetId}`],
+		};
+	}
+	const selectedTarget = preferredTarget ?? targets[targets.length - 1]!;
+	const otpProvider: OtpProvider | undefined =
+		selectedTarget.interactiveAuth && context?.hasUI
+			? async () => {
+				const labels = [selectedTarget.name ?? selectedTarget.host];
+				return await promptForOtp(context, labels);
+			}
+			: undefined;
+	const requireExisting = selectedTarget.interactiveAuth && !otpProvider;
+	return syncSftpFile({
+		cwd,
+		localPath: details.moveTo ?? details.path,
+		targets: [selectedTarget],
+		requireExisting,
+		otpProvider,
+	});
+}
+
+async function uploadSftpPath(options: {
 	cwd: string;
 	localPath: string;
 	targets: SftpTargetConfig[];
 	requireExisting?: boolean;
-	otp?: string;
+	otp?: string | null;
+	otpProvider?: OtpProvider;
 }): Promise<SftpSyncDetails> {
 	const targets = options.targets;
 	const labels = targets.map((target) => describeTarget(target));
@@ -337,6 +463,7 @@ export async function uploadSftpPath(options: {
 				target,
 				requireExisting: options.requireExisting,
 				otp: options.otp,
+				otpProvider: options.otpProvider,
 			});
 			if (isDirectory) {
 				await client.uploadDir(localAbsolute, remotePath);
@@ -358,12 +485,13 @@ export async function uploadSftpPath(options: {
 	};
 }
 
-export async function downloadSftpPath(options: {
+async function downloadSftpPath(options: {
 	cwd: string;
 	localPath: string;
 	targets: SftpTargetConfig[];
 	requireExisting?: boolean;
-	otp?: string;
+	otp?: string | null;
+	otpProvider?: OtpProvider;
 }): Promise<SftpSyncDetails> {
 	const targets = options.targets;
 	const labels = targets.map((target) => describeTarget(target));
@@ -389,6 +517,7 @@ export async function downloadSftpPath(options: {
 				target,
 				requireExisting: options.requireExisting,
 				otp: options.otp,
+				otpProvider: options.otpProvider,
 			});
 			const exists = await client.exists(remotePath);
 			if (!exists) {
@@ -413,4 +542,301 @@ export async function downloadSftpPath(options: {
 		uploaded: downloaded,
 		errors: errors.length > 0 ? errors : undefined,
 	};
+}
+
+type NotifyLevel = "info" | "warning" | "error";
+
+const SFTP_USAGE = [
+	"Usage:",
+	"  /sftp",
+	"  /sftp upload <path>",
+	"  /sftp download <path>",
+	"  /sftp target <targetName>",
+].join("\n");
+
+type SftpCommand = {
+	cmd?: "upload" | "download" | "target" | "select";
+	path?: string;
+	name?: string;
+};
+
+let selectedTargetId: string | undefined;
+
+function getTargetId(target: { name?: string; host: string }): string {
+	return target.name ?? target.host;
+}
+
+function parseSubcommand(input: string): SftpCommand {
+	const trimmed = input.trim();
+	if (!trimmed) {
+		return { cmd: "select" };
+	}
+	const lower = trimmed.toLowerCase();
+	if (lower.startsWith("target ") || lower === "target") {
+		const rawName = trimmed.slice("target".length).trim();
+		return { cmd: "target", name: rawName || undefined };
+	}
+	const [commandRaw, ...rest] = trimmed.split(/\s+/);
+	const command = commandRaw.toLowerCase();
+	const path = rest.join(" ").trim();
+	if (command !== "upload" && command !== "download") {
+		return {};
+	}
+	return {
+		cmd: command,
+		path: path || undefined,
+	};
+}
+
+function notify(
+	ctx: ExtensionContext,
+	message: string,
+	level: NotifyLevel,
+): void {
+	if (ctx.hasUI && ctx.ui?.notify) {
+		ctx.ui.notify(message, level);
+		return;
+	}
+	const prefix = level === "error" ? "[error]" : level === "warning" ? "[warn]" : "[info]";
+	console.log(`${prefix} ${message}`);
+}
+
+function formatTargets(targets: string[]): string {
+	return targets.length > 0 ? targets.join(", ") : "(none)";
+}
+
+function describeTargetName(name: string | undefined, host: string): string {
+	return name ? `${name} (${host})` : host;
+}
+
+function renderTargetList(targets: Array<{ name?: string; host: string }>): string {
+	if (targets.length === 0) return "(none)";
+	return targets
+		.map((target, index) => {
+			const label = describeTargetName(target.name, target.host);
+			const isSelected =
+				(selectedTargetId && getTargetId(target) === selectedTargetId) ||
+				(!selectedTargetId && index === targets.length - 1);
+			return isSelected ? `* ${label}` : `  ${label}`;
+		})
+		.join("\n");
+}
+
+function pickTarget<T extends { name?: string; host: string }>(
+	targets: T[],
+	id: string | undefined,
+): T | undefined {
+	if (!id) return undefined;
+	const named = targets.find((target) => target.name === id);
+	if (named) {
+		return named;
+	}
+	return targets.find((target) => getTargetId(target) === id);
+}
+
+async function promptForOtp(ctx: ExtensionContext, labels: string[]): Promise<string | null> {
+	if (!ctx.hasUI) {
+		return null;
+	}
+	const title = labels.length === 1 ? `SFTP OTP (${labels[0]})` : `SFTP OTP (${labels.length} targets)`;
+	const value = await ctx.ui.input(title, "Enter one-time code");
+	const normalized = value?.trim();
+	return normalized && normalized.length > 0 ? normalized : null;
+}
+
+async function promptForTargetSelection(
+	ctx: ExtensionContext,
+	targets: SftpTargetConfig[],
+): Promise<SftpTargetConfig | null> {
+	if (!ctx.hasUI || !ctx.ui?.select) {
+		return null;
+	}
+
+	const fallbackIndex = Math.max(0, targets.length - 1);
+	const preferredIndexRaw = selectedTargetId
+		? targets.findIndex((target) => getTargetId(target) === selectedTargetId)
+		: fallbackIndex;
+	const preferredIndex = preferredIndexRaw >= 0 ? preferredIndexRaw : fallbackIndex;
+
+	const preferredTarget = targets[preferredIndex];
+	const orderedTargets = preferredTarget
+		? [preferredTarget, ...targets.filter((_, index) => index !== preferredIndex)]
+		: [...targets];
+
+	const options = orderedTargets.map((target, index) => {
+		const label = describeTargetName(target.name, target.host);
+		const currentTag = index === 0 ? " (current)" : "";
+		return `[${index + 1}] ${label} -> ${target.remotePath}${currentTag}`;
+	});
+
+	const selectedOption = await ctx.ui.select("Select SFTP target", options);
+	if (!selectedOption) {
+		return null;
+	}
+
+	const selectedIndex = options.findIndex((option) => option === selectedOption);
+	if (selectedIndex < 0 || selectedIndex >= orderedTargets.length) {
+		return null;
+	}
+
+	return orderedTargets[selectedIndex] ?? null;
+}
+
+export function registerSftpCommands(pi: ExtensionAPI): void {
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName !== "ApplyPatch" || event.isError) {
+			return;
+		}
+
+		if (!isApplyPatchResultDetails(event.details)) {
+			return;
+		}
+
+		const sftp = await maybeSyncApplyPatchResult(ctx.cwd, event.details, ctx);
+		if (!sftp) {
+			return;
+		}
+		const baseDetails = event.details as unknown as Record<string, unknown>;
+
+		return {
+			details: {
+				...baseDetails,
+				sftp,
+			},
+		};
+	});
+
+	pi.registerCommand("sftp", {
+		description: "Sync files with SFTP (.vscode/sftp.json)",
+		handler: async (args, ctx) => {
+			const parsed = parseSubcommand(args);
+			if (!parsed.cmd) {
+				notify(ctx, SFTP_USAGE, "warning");
+				return;
+			}
+			if ((parsed.cmd === "upload" || parsed.cmd === "download") && !parsed.path) {
+				notify(ctx, SFTP_USAGE, "warning");
+				return;
+			}
+
+			let targets: SftpTargetConfig[];
+			try {
+				targets = await loadSftpTargets(ctx.cwd);
+			} catch (error) {
+				notify(ctx, (error as Error).message, "error");
+				return;
+			}
+			if (targets.length === 0) {
+				notify(ctx, "No SFTP targets found in .vscode/sftp.json.", "warning");
+				return;
+			}
+
+			if (parsed.cmd === "select") {
+				if (!ctx.hasUI || !ctx.ui?.select) {
+					notify(ctx, `Interactive target selection requires UI.\nAvailable targets:\n${renderTargetList(targets)}`, "warning");
+					return;
+				}
+
+				const selected = await promptForTargetSelection(ctx, targets);
+				if (!selected) {
+					notify(ctx, "Target selection cancelled.", "warning");
+					return;
+				}
+
+				selectedTargetId = getTargetId(selected);
+				const label = describeTargetName(selected.name, selected.host);
+				notify(ctx, `SFTP target set to ${label}.`, "info");
+				return;
+			}
+
+			if (parsed.cmd === "target") {
+				if (!parsed.name) {
+					notify(ctx, `Missing target name.\n${SFTP_USAGE}`, "warning");
+					return;
+				}
+				const selected = pickTarget(targets, parsed.name);
+				if (!selected) {
+					notify(ctx, `Unknown target: ${parsed.name}`, "warning");
+					notify(ctx, `Available targets:\n${renderTargetList(targets)}`, "info");
+					return;
+				}
+				selectedTargetId = getTargetId(selected);
+				const label = describeTargetName(selected.name, selected.host);
+				notify(ctx, `SFTP target set to ${label}.`, "info");
+				return;
+			}
+
+			const explicit = selectedTargetId ? pickTarget(targets, selectedTargetId) : undefined;
+			if (selectedTargetId && !explicit) {
+				notify(ctx, `Selected target not found: ${selectedTargetId}`, "warning");
+				notify(ctx, `Available targets:\n${renderTargetList(targets)}`, "info");
+				return;
+			}
+			const selectedTargets = [explicit ?? targets[targets.length - 1]!];
+			const targetPath = parsed.path;
+			if (!targetPath) {
+				notify(ctx, SFTP_USAGE, "warning");
+				return;
+			}
+
+			const interactiveTargets = selectedTargets.filter((target) => target.interactiveAuth);
+			let otp: string | null | undefined = undefined;
+			const otpProvider: OtpProvider | undefined =
+				interactiveTargets.length > 0 && ctx.hasUI
+					? async () => {
+						if (otp !== undefined) {
+							return otp;
+						}
+						const labels = interactiveTargets.map((target) => target.name ?? target.host);
+						otp = await promptForOtp(ctx, labels);
+						return otp;
+					}
+					: undefined;
+
+			const action = parsed.cmd;
+			const runAction = async (otpValue: string | null | undefined) => {
+				return action === "upload"
+					? await uploadSftpPath({
+							cwd: ctx.cwd,
+							localPath: targetPath,
+							targets: selectedTargets,
+							otp: otpValue ?? undefined,
+							otpProvider,
+							requireExisting: false,
+						})
+					: await downloadSftpPath({
+							cwd: ctx.cwd,
+							localPath: targetPath,
+							targets: selectedTargets,
+							otp: otpValue ?? undefined,
+							otpProvider,
+							requireExisting: false,
+						});
+			};
+
+			let details = await runAction(otp);
+			if (interactiveTargets.length > 0 && otp === undefined && shouldRetryInteractiveAuth(details.errors)) {
+				if (!otpProvider) {
+					notify(ctx, "OTP input requires interactive UI.", "warning");
+					return;
+				}
+				otp = await otpProvider();
+				if (!otp) {
+					notify(ctx, "OTP input cancelled.", "warning");
+					return;
+				}
+				details = await runAction(otp);
+			}
+
+			const countLabel = action === "upload" ? "uploaded" : "downloaded";
+			const baseMessage = `${action} ${targetPath}: ${countLabel} ${details.uploaded} to ${formatTargets(
+				details.targets,
+			)}`;
+			if (details.errors && details.errors.length > 0) {
+				notify(ctx, `${baseMessage}\nerrors: ${details.errors.join("; ")}`, "warning");
+				return;
+			}
+			notify(ctx, baseMessage, "info");
+		},
+	});
 }
