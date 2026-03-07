@@ -113,6 +113,15 @@ function resolveLocalPath(cwd: string, targetPath: string): string {
 	return isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
 }
 
+function isPathWithinCwd(cwd: string, targetPath: string): boolean {
+	const resolved = resolve(targetPath);
+	const rel = relative(cwd, resolved);
+	if (!rel) {
+		return false;
+	}
+	return !rel.startsWith("..") && !rel.includes(".." + sep);
+}
+
 function buildRemotePath(remoteRoot: string, localPath: string, cwd: string): string | null {
 	const rel = relative(cwd, localPath);
 	if (!rel || rel.startsWith("..") || rel.includes(".." + sep)) {
@@ -379,6 +388,10 @@ async function maybeSyncApplyPatchResult(
 	if (!shouldSyncForApplyPatch(details)) {
 		return undefined;
 	}
+	const localPath = details.moveTo ?? details.path;
+	if (!isPathWithinCwd(cwd, localPath)) {
+		return undefined;
+	}
 
 	let targets: SftpTargetConfig[];
 	try {
@@ -415,7 +428,7 @@ async function maybeSyncApplyPatchResult(
 	const requireExisting = selectedTarget.interactiveAuth && !otpProvider;
 	return syncSftpFile({
 		cwd,
-		localPath: details.moveTo ?? details.path,
+		localPath,
 		targets: [selectedTarget],
 		requireExisting,
 		otpProvider,
