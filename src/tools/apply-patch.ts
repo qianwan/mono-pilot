@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createEditTool, createWriteTool, keyHint } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
+import { loadSftpTargets, syncSftpFile, type SftpSyncDetails } from "../extensions/sftp.js";
 
 const BEGIN_PATCH = "*** Begin Patch";
 const END_PATCH = "*** End Patch";
@@ -68,6 +69,7 @@ export interface ApplyPatchDetails {
 	bytesWritten?: number;
 	patchLineCount?: number;
 	patchText?: string;
+	sftp?: SftpSyncDetails;
 }
 
 function normalizeLineEndings(text: string): string {
@@ -156,7 +158,55 @@ function buildRenderDetailLines(details: ApplyPatchDetails | undefined): string[
 		lines.push(details.patchText.length > 0 ? details.patchText : "(empty patch)");
 	}
 
+	if (details.sftp) {
+		const targets = details.sftp.targets.length > 0 ? details.sftp.targets.join(", ") : "(none)";
+		lines.push(`sftp uploaded: ${details.sftp.uploaded} to ${targets}`);
+		if (details.sftp.errors && details.sftp.errors.length > 0) {
+			lines.push(`sftp errors: ${details.sftp.errors.join("; ")}`);
+		}
+	}
+
 	return lines;
+}
+
+function shouldSyncSftp(details: ApplyPatchDetails): boolean {
+	if (details.operation === "add") {
+		return true;
+	}
+	if (details.moveTo) {
+		return true;
+	}
+	return typeof details.appliedHunks === "number" && details.appliedHunks > 0;
+}
+
+async function maybeSyncSftp(cwd: string, details: ApplyPatchDetails): Promise<SftpSyncDetails | undefined> {
+	if (!shouldSyncSftp(details)) {
+		return undefined;
+	}
+	let targets: Awaited<ReturnType<typeof loadSftpTargets>>;
+	try {
+		targets = await loadSftpTargets(cwd);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			targets: [],
+			uploaded: 0,
+			errors: [message],
+		};
+	}
+	if (targets.length === 0) {
+		return undefined;
+	}
+	const localPath = details.moveTo ?? details.path;
+	const selectedTargets = [targets[targets.length - 1]!];
+	const target = selectedTargets[0]!;
+	const result = await syncSftpFile({
+		cwd,
+		localPath,
+		targets: selectedTargets,
+		requireExisting: target.interactiveAuth,
+	});
+	return result;
 }
 
 function normalizeAddFileLines(lines: string[]): string[] {
@@ -684,10 +734,12 @@ export default function (pi: ExtensionAPI) {
 				toolCallId,
 				signal,
 			});
+			const sftp = await maybeSyncSftp(ctx.cwd, details);
+			const outputDetails = sftp ? { ...details, sftp } : details;
 
 			return {
 				content: [{ type: "text", text: summary }],
-				details,
+				details: outputDetails,
 			};
 		},
 	});
