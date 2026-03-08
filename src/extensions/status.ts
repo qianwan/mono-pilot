@@ -29,7 +29,7 @@ interface ParsedStatusArgs {
 	error?: string;
 }
 
-const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 12000;
 const USAGE = "Usage: /status [--timeout-ms <milliseconds>]";
 
 const PROVIDER_LABELS: Record<UsageProviderId, string> = {
