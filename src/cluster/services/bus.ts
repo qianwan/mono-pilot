@@ -15,7 +15,7 @@ import {
 	type MessagePushPayload,
 	type PresencePushPayload,
 } from "../protocol.js";
-import type { ServiceHandler, RequestContext } from "../leader.js";
+import type { ServiceHandler } from "../leader.js";
 import type { BusHandle, MessageHandler, PresenceHandler } from "../bus.js";
 import { clusterLog } from "../log.js";
 
@@ -27,6 +27,7 @@ type PushFn = (method: string, payload: unknown) => void;
 interface ConnectedAgent {
 	agentId: string;
 	displayName?: string;
+	role: "leader" | "follower";
 	push: PushFn;
 	channels: Set<string>;
 }
@@ -49,13 +50,19 @@ function socketPush(socket: import("node:net").Socket): PushFn {
 	};
 }
 
-function registerAgent(agentId: string, push: PushFn, channels?: string[], displayName?: string): string[] {
+function registerAgent(
+	agentId: string,
+	push: PushFn,
+	role: "leader" | "follower",
+	channels?: string[],
+	displayName?: string,
+): string[] {
 	const existing = agents.get(agentId);
 	if (existing) existing.push = () => {};
 
 	const defaultChannels = ["public", `private:${agentId}`];
 	const allChannels = [...defaultChannels, ...(channels ?? [])];
-	agents.set(agentId, { agentId, displayName, push, channels: new Set(allChannels) });
+	agents.set(agentId, { agentId, displayName, role, push, channels: new Set(allChannels) });
 	clusterLog.info("agent registered", { agentId, channels: allChannels });
 
 	broadcastPresence(agentId, "joined", agentId);
@@ -81,7 +88,13 @@ export function createBusHandler(): ServiceHandler {
 				case "register": {
 					const { agentId, channels, displayName } = req.params as RegisterParams;
 					if (!agentId) { ctx.respond({ error: "register requires agentId" }); return; }
-					const allChannels = registerAgent(agentId, socketPush(ctx.socket), channels, displayName);
+					const allChannels = registerAgent(
+						agentId,
+						socketPush(ctx.socket),
+						"follower",
+						channels,
+						displayName,
+					);
 					ctx.setRegisteredId(agentId);
 					ctx.respond({ result: { agentId, channels: allChannels } });
 					return;
@@ -148,6 +161,7 @@ export function createBusHandler(): ServiceHandler {
 					const roster = [...agents.entries()].map(([id, a]) => ({
 						agentId: id,
 						displayName: a.displayName,
+						role: a.role,
 						channels: [...a.channels],
 					}));
 					ctx.respond({ result: { agents: roster } });
@@ -180,7 +194,7 @@ export function createLeaderBus(agentId: string, displayName?: string): BusHandl
 		}
 	};
 
-	registerAgent(agentId, push, undefined, displayName);
+	registerAgent(agentId, push, "leader", undefined, displayName);
 
 	return {
 		async send(to, payload, channel) {
@@ -225,6 +239,7 @@ export function createLeaderBus(agentId: string, displayName?: string): BusHandl
 				agents: [...agents.entries()].map(([id, a]) => ({
 					agentId: id,
 					displayName: a.displayName,
+					role: a.role,
 					channels: [...a.channels],
 				})),
 			};
@@ -242,7 +257,7 @@ export function createLeaderBus(agentId: string, displayName?: string): BusHandl
 			}
 
 			if (matches.length === 0) {
-				throw new Error(`No agent found for "${target}". Use /bus who to list agents.`);
+				throw new Error(`No agent found for "${target}". Use /cluster who to list agents.`);
 			}
 
 			const ids = matches.map((agent) => agent.agentId).join(", ");

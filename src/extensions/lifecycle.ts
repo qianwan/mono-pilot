@@ -10,11 +10,18 @@ import { LSP } from "../lsp/index.js";
 import { deriveAgentId } from "../agents-paths.js";
 import { loadResolvedMemorySearchConfig } from "../memory/config/loader.js";
 import { initCluster, closeCluster, type ClusterService } from "../cluster/init.js";
+import {
+	initClusterV2,
+	closeClusterV2,
+	type ClusterV2Service,
+} from "../cluster_v2/index.js";
 import { setMemoryWorkersEmbeddingProvider, closeMemorySearchManagers } from "../memory/runtime/index.js";
 import { warmMemorySearch } from "../memory/warm.js";
 import type { BusHandle } from "../cluster/bus.js";
 import { setMailBoxHandle } from "./game/mailbox.js";
 import type { MessagePushPayload } from "../cluster/protocol.js";
+
+let activeClusterVersion: "v1" | "v2" | null = null;
 
 export interface SubsystemHandles {
 	bus: BusHandle | null;
@@ -44,15 +51,28 @@ export async function initSubsystems(
 
 	// 2. Cluster + 3. Memory (cluster provides embedding for memory)
 	const settings = await loadResolvedMemorySearchConfig();
-	let cluster: ClusterService | null = null;
+	let cluster: ClusterService | ClusterV2Service | null = null;
+	const useClusterV2 =
+		process.env.MONO_PILOT_CLUSTER_VERSION === "2" || process.env.MONO_PILOT_CLUSTER_V2 === "1";
 
 	if (settings.enabled && settings.provider === "local") {
-		cluster = await initCluster({
-			...settings.local,
-			agentId,
-			displayName: options?.displayName,
-			getSessionId,
-		});
+		if (useClusterV2) {
+			cluster = await initClusterV2({
+				...settings.local,
+				agentId,
+				displayName: options?.displayName,
+				getSessionId,
+			});
+			activeClusterVersion = "v2";
+		} else {
+			cluster = await initCluster({
+				...settings.local,
+				agentId,
+				displayName: options?.displayName,
+				getSessionId,
+			});
+			activeClusterVersion = "v1";
+		}
 		setMemoryWorkersEmbeddingProvider(cluster.embedding);
 	}
 
@@ -88,7 +108,12 @@ export async function shutdownSubsystems(handles: SubsystemHandles | null): Prom
 		// Memory
 		await closeMemorySearchManagers();
 		// Cluster
-		await closeCluster();
+		if (activeClusterVersion === "v2") {
+			await closeClusterV2();
+		} else {
+			await closeCluster();
+		}
+		activeClusterVersion = null;
 	} catch (err) {
 		console.warn(`[subsystems] shutdown failed: ${String(err)}`);
 	}

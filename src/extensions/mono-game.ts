@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { setBusSendDefaultChannel, setBusSendHandle } from "../tools/bus-send.js";
 import registerGameSystemPromptExtension from "./game/system-prompt.js";
 import { initSubsystems, shutdownSubsystems, type SubsystemHandles } from "./lifecycle.js";
@@ -6,7 +6,11 @@ import { getGameChannel, getGameGmChannel, loadGameIdentity } from "./game/ident
 import { createGameBusMessageInjector } from "./game/bus-injection.js";
 import { setMailBoxHandle } from "./game/mailbox.js";
 import { resolveGameToolExtensions } from "./game/tools.js";
-import { registerBusCommands, setBusCommandDefaultChannel, setBusHandle } from "./commands/bus.js";
+import {
+	registerClusterCommands,
+	setClusterCommandDefaultChannel,
+	setClusterHandle,
+} from "./cluster.js";
 
 export default function monoGameExtension(pi: ExtensionAPI) {
 	pi.registerFlag("game-channel", {
@@ -15,14 +19,14 @@ export default function monoGameExtension(pi: ExtensionAPI) {
 	});
 
 	registerGameSystemPromptExtension(pi);
-	registerBusCommands(pi);
+	registerClusterCommands(pi);
 
 	let handles: SubsystemHandles | null = null;
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (handles) {
-			setBusHandle(null);
-			setBusCommandDefaultChannel(undefined);
+			setClusterHandle(null);
+			setClusterCommandDefaultChannel(undefined);
 			setBusSendHandle(null);
 			setBusSendDefaultChannel(undefined);
 			setMailBoxHandle(null);
@@ -53,8 +57,8 @@ export default function monoGameExtension(pi: ExtensionAPI) {
 				busMessageInjector: createGameBusMessageInjector(pi, { gmChannel }),
 			});
 			handles = h;
-			setBusHandle(h.bus);
-			setBusCommandDefaultChannel(gameChannel);
+			setClusterHandle(h.bus);
+			setClusterCommandDefaultChannel(gameChannel);
 			setBusSendHandle(h.bus);
 			setMailBoxHandle(h.bus, { gmChannel });
 		} catch (err) {
@@ -63,8 +67,8 @@ export default function monoGameExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		setBusHandle(null);
-		setBusCommandDefaultChannel(undefined);
+		setClusterHandle(null);
+		setClusterCommandDefaultChannel(undefined);
 		setBusSendHandle(null);
 		setBusSendDefaultChannel(undefined);
 		setMailBoxHandle(null);

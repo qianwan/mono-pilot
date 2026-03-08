@@ -22,11 +22,47 @@ export async function createLocalEmbeddingProvider(params: {
 
 	const nodeLlamaCpp = await import("node-llama-cpp");
 	const { getLlama, resolveModelFile } = nodeLlamaCpp;
-	const logLevel = (nodeLlamaCpp as any).LlamaLogLevel?.error as LlamaLogLevel | undefined;
+	const logLevel = nodeLlamaCpp.LlamaLogLevel?.error as LlamaLogLevel | undefined;
 
 	let llama: Llama | null = null;
 	let model: LlamaModel | null = null;
 	let context: LlamaEmbeddingContext | null = null;
+	let closing = false;
+	let inFlightRequests = 0;
+	let disposePromise: Promise<void> | null = null;
+	const idleWaiters = new Set<() => void>();
+
+	const notifyIfIdle = (): void => {
+		if (inFlightRequests !== 0) {
+			return;
+		}
+		for (const resolve of idleWaiters) {
+			resolve();
+		}
+		idleWaiters.clear();
+	};
+
+	const waitForIdle = async (): Promise<void> => {
+		if (inFlightRequests === 0) {
+			return;
+		}
+		await new Promise<void>((resolve) => {
+			idleWaiters.add(resolve);
+		});
+	};
+
+	const runWithInFlightTracking = async <T>(operation: () => Promise<T>): Promise<T> => {
+		if (closing) {
+			throw new Error("embedding provider is closing");
+		}
+		inFlightRequests += 1;
+		try {
+			return await operation();
+		} finally {
+			inFlightRequests = Math.max(0, inFlightRequests - 1);
+			notifyIfIdle();
+		}
+	};
 
 	const ensureContext = async () => {
 		if (!llama) {
@@ -46,27 +82,43 @@ export async function createLocalEmbeddingProvider(params: {
 		id: "local",
 		model: modelPath,
 		embedQuery: async (text) => {
-			const ctx = await ensureContext();
-			const embedding = await ctx.getEmbeddingFor(text);
-			return normalizeEmbedding(Array.from(embedding.vector));
+			return runWithInFlightTracking(async () => {
+				const ctx = await ensureContext();
+				const embedding = await ctx.getEmbeddingFor(text);
+				return normalizeEmbedding(Array.from(embedding.vector));
+			});
 		},
 		embedBatch: async (texts) => {
-			const ctx = await ensureContext();
-			const embeddings = await Promise.all(
-				texts.map(async (text) => {
-					const embedding = await ctx.getEmbeddingFor(text);
-					return normalizeEmbedding(Array.from(embedding.vector));
-				}),
-			);
-			return embeddings;
+			return runWithInFlightTracking(async () => {
+				const ctx = await ensureContext();
+				const embeddings = await Promise.all(
+					texts.map(async (text) => {
+						const embedding = await ctx.getEmbeddingFor(text);
+						return normalizeEmbedding(Array.from(embedding.vector));
+					}),
+				);
+				return embeddings;
+			});
 		},
 		dispose: async () => {
-			if (model) {
-				await model.dispose();
+			if (disposePromise) {
+				await disposePromise;
+				return;
 			}
-			context = null;
-			model = null;
-			llama = null;
+			closing = true;
+			disposePromise = (async () => {
+				await waitForIdle();
+				if (context) {
+					await context.dispose();
+					context = null;
+				}
+				if (model) {
+					await model.dispose();
+					model = null;
+				}
+				llama = null;
+			})();
+			await disposePromise;
 		},
 	};
 }

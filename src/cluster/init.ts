@@ -32,6 +32,10 @@ let activeService: ClusterService | null = null;
 let cachedParams: ClusterInitParams | null = null;
 let reElecting: Promise<void> | null = null;
 
+export function getActiveClusterService(): ClusterService | null {
+	return activeService;
+}
+
 /**
  * Initialize the cluster. Tries follower first, falls back to leader.
  * Returns a ClusterService with both embedding and bus.

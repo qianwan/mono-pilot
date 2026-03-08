@@ -24,7 +24,14 @@ export interface BusHandle {
 	/** Subscribe to additional channels. */
 	subscribe(channels: string[]): Promise<{ channels: string[] }>;
 	/** List all connected agents. */
-	roster(): Promise<{ agents: Array<{ agentId: string; displayName?: string; channels: string[] }> }>;
+	roster(): Promise<{
+		agents: Array<{
+			agentId: string;
+			displayName?: string;
+			role: "leader" | "follower";
+			channels: string[];
+		}>;
+	}>;
 	/** Resolve displayName or agentId to an agentId. */
 	resolveTarget(target: string): Promise<{ agentId: string; displayName?: string }>;
 	/** Register a handler for incoming messages from other agents. */
@@ -98,7 +105,14 @@ export async function connectBus(
 	});
 
 	const roster = async () => {
-		return client.call<{ agents: Array<{ agentId: string; displayName?: string; channels: string[] }> }>(
+		return client.call<{
+			agents: Array<{
+				agentId: string;
+				displayName?: string;
+				role: "leader" | "follower";
+				channels: string[];
+			}>;
+		}>(
 			"roster",
 			{},
 		);
@@ -117,7 +131,7 @@ export async function connectBus(
 		}
 
 		if (matches.length === 0) {
-			throw new Error(`No agent found for "${target}". Use /bus who to list agents.`);
+			throw new Error(`No agent found for "${target}". Use /cluster who to list agents.`);
 		}
 
 		const ids = matches.map((agent) => agent.agentId).join(", ");
