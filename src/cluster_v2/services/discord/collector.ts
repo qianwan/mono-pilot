@@ -4,18 +4,18 @@ import {
 	extractDiscordCollectorConfig,
 	type DiscordCollectorConfig,
 	type DiscordSubscribeEvent,
-} from "../../config/discord.js";
-import { loadMonoPilotConfigObject } from "../../config/mono-pilot.js";
-import { logClusterEvent, type ClusterLogContext } from "../observability.js";
-import type { ServiceDescriptor } from "../rpc.js";
+} from "../../../config/discord.js";
+import { loadMonoPilotConfigObject } from "../../../config/mono-pilot.js";
+import { logClusterEvent, type ClusterLogContext } from "../../observability.js";
+import type { ServiceDescriptor } from "../../rpc.js";
 import {
 	getAuthStorePath,
 	readDiscordAuthToken,
 	type DiscordAuthTokenRecord,
 	writeDiscordAuthToken,
-} from "./discord/auth-store.js";
-import { exchangeDiscordAuthorizeCode, tryRefreshDiscordToken } from "./discord/oauth.js";
-import { DiscordRpcClient } from "./discord-rpc.js";
+} from "./auth-store.js";
+import { exchangeDiscordAuthorizeCode, tryRefreshDiscordToken } from "./oauth.js";
+import { DiscordRpcClient } from "./rpc-client.js";
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
