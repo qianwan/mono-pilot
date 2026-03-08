@@ -12,6 +12,7 @@ import {
 import { createClusterLogContext, logClusterEvent, type ClusterLogContext } from "./observability.js";
 import { createEmbeddingClient, createEmbeddingHandlers } from "./services/embedding.js";
 import { connectBusClient, createBusService, type BusHandle } from "./services/bus.js";
+import { maybeStartDiscordCollector, type DiscordCollectorHandle } from "./services/discord/index.js";
 import { FollowerRegistryCache } from "./services/registry-cache.js";
 import { ServiceRegistry } from "./services/registry.js";
 
@@ -432,9 +433,6 @@ async function tryServeAsLeader(params: ClusterV2InitParams): Promise<ClusterV2S
 	activeLeaderScopes.add(leaderScope);
 	logClusterEvent("info", "leader_scope_activated", logContext, { leaderScope });
 
-	const registry = new ServiceRegistry();
-	registerDefaultServices(registry);
-
 	const busService = createBusService();
 	const embeddingHandlers = createEmbeddingHandlers(provider, {
 		maxConcurrentRequests: parsePositiveIntegerEnv(
@@ -446,6 +444,24 @@ async function tryServeAsLeader(params: ClusterV2InitParams): Promise<ClusterV2S
 			DEFAULT_CLUSTER_V2_EMBEDDING_MAX_TEXTS_PER_REQUEST,
 		),
 	});
+
+	let discordCollector: DiscordCollectorHandle | null = null;
+	try {
+		discordCollector = await maybeStartDiscordCollector(logContext);
+	} catch (error) {
+		logClusterEvent("warn", "discord_collector_start_failed", logContext, {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		discordCollector = null;
+	}
+
+	const extraServices: ServiceDescriptor[] = [];
+	if (discordCollector) {
+		extraServices.push(discordCollector.descriptor);
+	}
+
+	const registry = new ServiceRegistry();
+	registerDefaultServices(registry, extraServices);
 
 	const handlers: Record<string, (request: ClusterRequest, connection: RpcConnection) => Promise<unknown>> = {
 		"cluster.ping": async () => "pong",
@@ -488,6 +504,10 @@ async function tryServeAsLeader(params: ClusterV2InitParams): Promise<ClusterV2S
 		}
 		closingLeader = true;
 		activeLeaderScopes.delete(leaderScope);
+		if (discordCollector) {
+			await discordCollector.close();
+			discordCollector = null;
+		}
 		bus.close();
 		await connection.close();
 		transitionConnectionLifecycle(lifecycle, "closed", `leader_close:${reason}`, logContext);
@@ -540,7 +560,7 @@ async function tryServeAsLeader(params: ClusterV2InitParams): Promise<ClusterV2S
 	};
 }
 
-function registerDefaultServices(registry: ServiceRegistry): void {
+function registerDefaultServices(registry: ServiceRegistry, extras?: ServiceDescriptor[]): void {
 	const services: ServiceDescriptor[] = [
 		{ name: "embedding", version: "v2", capabilities: { methods: ["embedding.embedBatch"] } },
 		{
@@ -550,6 +570,7 @@ function registerDefaultServices(registry: ServiceRegistry): void {
 				methods: ["bus.register", "bus.subscribe", "bus.send", "bus.broadcast", "bus.roster"],
 			},
 		},
+		...(extras ?? []),
 	];
 	for (const service of services) {
 		registry.register(service);
