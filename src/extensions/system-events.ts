@@ -19,7 +19,7 @@ type OverlayOptionsLike = {
 	anchor?: OverlayAnchorLike;
 	offsetX?: number;
 	offsetY?: number;
-	margin?: number;
+	margin?: number | { top?: number; right?: number; bottom?: number; left?: number };
 	nonCapturing?: boolean;
 	width?: number | `${number}%`;
 	maxHeight?: number | `${number}%`;
@@ -74,8 +74,11 @@ const OVERLAY_FALLBACK_TIMEOUT_MS = 120_000;
 const ERROR_OVERLAY_MIN_WIDTH = 44;
 const ERROR_OVERLAY_MAX_WIDTH = 84;
 const ERROR_OVERLAY_MAX_MESSAGE_LINES = 3;
-const OVERLAY_MARGIN = 1;
-const OVERLAY_OFFSET_X = 0;
+const OVERLAY_MARGIN_TOP = 1;
+const OVERLAY_MARGIN_RIGHT = 0;
+const OVERLAY_MARGIN_BOTTOM = 0;
+const OVERLAY_MARGIN_LEFT = 1;
+const OVERLAY_OFFSET_X = 2;
 const OVERLAY_OFFSET_Y = -4;
 const OVERLAY_INPUT_TOP_GAP_ROWS = 0;
 const OVERLAY_CLOSE_MARK = "[×]";
@@ -261,7 +264,7 @@ function resolveResponsiveOffsetY(tuiLike: OverlayTuiLike | null): number {
 		return OVERLAY_OFFSET_Y;
 	}
 	const targetBottomExclusive = editorTopRow - OVERLAY_INPUT_TOP_GAP_ROWS;
-	return targetBottomExclusive - (termHeight - OVERLAY_MARGIN);
+	return targetBottomExclusive - (termHeight - OVERLAY_MARGIN_BOTTOM);
 }
 
 function isEscapeKey(data: string): boolean {
@@ -294,7 +297,12 @@ function showOverlay(
 		anchor: "bottom-right",
 		offsetX: OVERLAY_OFFSET_X,
 		offsetY: resolvedOffsetY,
-		margin: OVERLAY_MARGIN,
+		margin: {
+			top: OVERLAY_MARGIN_TOP,
+			right: OVERLAY_MARGIN_RIGHT,
+			bottom: OVERLAY_MARGIN_BOTTOM,
+			left: OVERLAY_MARGIN_LEFT,
+		},
 		nonCapturing: true,
 		maxHeight: 8,
 		width: "40%",
@@ -409,29 +417,59 @@ function showOverlay(
 						);
 						const termHeight = Math.max(8, Math.floor(Number(tuiLike.terminal?.rows ?? 24)) || 24);
 						const overlayWidth = Math.max(1, Math.floor(width));
-						const marginTop = OVERLAY_MARGIN;
-						const marginBottom = OVERLAY_MARGIN;
-						const marginLeft = OVERLAY_MARGIN;
-						const marginRight = OVERLAY_MARGIN;
+						const marginTop = OVERLAY_MARGIN_TOP;
+						const marginBottom = OVERLAY_MARGIN_BOTTOM;
+						const marginLeft = OVERLAY_MARGIN_LEFT;
+						const marginRight = OVERLAY_MARGIN_RIGHT;
 						const availWidth = Math.max(1, termWidth - marginLeft - marginRight);
 						const availHeight = Math.max(1, termHeight - marginTop - marginBottom);
 
-						let row = marginTop + Math.max(0, availHeight - rows.length);
-						let col = marginLeft + Math.max(0, availWidth - overlayWidth);
-						row += resolvedOffsetY;
-						col += OVERLAY_OFFSET_X;
-						row = clamp(row, marginTop, termHeight - marginBottom - rows.length);
-						col = clamp(col, marginLeft, termWidth - marginRight - overlayWidth);
+						const fullHeight = rows.length;
+						const fullBaseRow = marginTop + Math.max(0, availHeight - fullHeight);
+						const desiredFullRow = fullBaseRow + resolvedOffsetY;
+						const visibleStart = Math.max(0, marginTop - desiredFullRow);
+						const visibleEnd = Math.min(fullHeight, termHeight - marginBottom - desiredFullRow);
+						const clippedRows =
+							visibleEnd > visibleStart ? rows.slice(visibleStart, visibleEnd) : [];
+						const clippedFromBottom = Math.max(0, fullHeight - visibleEnd);
 
-						const titleRowText = rows[1] ?? "";
-						const closeOffset = titleRowText.indexOf(OVERLAY_CLOSE_MARK);
-						const glyphOffset = OVERLAY_CLOSE_MARK.indexOf(OVERLAY_CLOSE_GLYPH);
-						if (closeOffset >= 0 && glyphOffset >= 0) {
-							layoutState.closeX = col + 1 + closeOffset + glyphOffset;
-							layoutState.closeY = row + 2;
+						if (clippedRows.length === 0) {
+							layoutState.closeX = -1;
+							layoutState.closeY = -1;
+							return clippedRows;
 						}
 
-						return rows;
+						// When bottom rows are clipped, anchor math would otherwise shift the
+						// remaining rows down and effectively clip one extra line.
+						const effectiveOffsetY = resolvedOffsetY - clippedFromBottom;
+						overlayOptionsState.offsetY = effectiveOffsetY;
+
+						let row = marginTop + Math.max(0, availHeight - clippedRows.length);
+						let col = marginLeft + Math.max(0, availWidth - overlayWidth);
+						row += effectiveOffsetY;
+						col += OVERLAY_OFFSET_X;
+						row = clamp(row, marginTop, termHeight - marginBottom - clippedRows.length);
+						col = clamp(col, marginLeft, termWidth - marginRight - overlayWidth);
+
+						const titleFullIndex = 1;
+						if (titleFullIndex >= visibleStart && titleFullIndex < visibleEnd) {
+							const titleVisibleIndex = titleFullIndex - visibleStart;
+							const titleRowText = clippedRows[titleVisibleIndex] ?? "";
+							const closeOffset = titleRowText.indexOf(OVERLAY_CLOSE_MARK);
+							const glyphOffset = OVERLAY_CLOSE_MARK.indexOf(OVERLAY_CLOSE_GLYPH);
+							if (closeOffset >= 0 && glyphOffset >= 0) {
+								layoutState.closeX = col + 1 + closeOffset + glyphOffset;
+								layoutState.closeY = row + titleVisibleIndex + 1;
+							} else {
+								layoutState.closeX = -1;
+								layoutState.closeY = -1;
+							}
+						} else {
+							layoutState.closeX = -1;
+							layoutState.closeY = -1;
+						}
+
+						return clippedRows;
 					},
 					invalidate(): void {
 						// Stateless component.
