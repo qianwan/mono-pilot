@@ -4,6 +4,27 @@ type NotifyLevel = "info" | "warning" | "error";
 
 type TerminalInputListenerResult = { consume?: boolean; data?: string } | undefined;
 
+type OverlayAnchorLike =
+	| "center"
+	| "top-left"
+	| "top-right"
+	| "bottom-left"
+	| "bottom-right"
+	| "top-center"
+	| "bottom-center"
+	| "left-center"
+	| "right-center";
+
+type OverlayOptionsLike = {
+	anchor?: OverlayAnchorLike;
+	offsetX?: number;
+	offsetY?: number;
+	margin?: number;
+	nonCapturing?: boolean;
+	width?: number | `${number}%`;
+	maxHeight?: number | `${number}%`;
+};
+
 export interface SystemEventsContext {
 	hasUI?: boolean;
 	ui?: {
@@ -18,24 +39,7 @@ export interface SystemEventsContext {
 			) => { render(width: number): string[]; invalidate(): void; dispose?(): void },
 			options?: {
 				overlay?: boolean;
-				overlayOptions?: {
-					anchor?:
-						| "center"
-						| "top-left"
-						| "top-right"
-						| "bottom-left"
-						| "bottom-right"
-						| "top-center"
-						| "bottom-center"
-						| "left-center"
-						| "right-center";
-					offsetX?: number;
-					offsetY?: number;
-					margin?: number;
-					nonCapturing?: boolean;
-					width?: number | `${number}%`;
-					maxHeight?: number | `${number}%`;
-				};
+				overlayOptions?: OverlayOptionsLike | (() => OverlayOptionsLike);
 			},
 		) => Promise<T>;
 	};
@@ -73,6 +77,7 @@ const ERROR_OVERLAY_MAX_MESSAGE_LINES = 3;
 const OVERLAY_MARGIN = 1;
 const OVERLAY_OFFSET_X = 0;
 const OVERLAY_OFFSET_Y = -4;
+const OVERLAY_INPUT_TOP_GAP_ROWS = 0;
 const OVERLAY_CLOSE_MARK = "[×]";
 const OVERLAY_CLOSE_GLYPH = "×";
 
@@ -83,6 +88,22 @@ const ERROR_OVERLAY_DEDUPE_WINDOW_MS = 1_800;
 interface ActiveOverlay {
 	id: symbol;
 	close: () => void;
+}
+
+interface OverlayChildLayoutLike {
+	startRow?: number;
+}
+
+interface OverlayTuiLike {
+	terminal?: { columns?: number; rows?: number };
+	childLayouts?: readonly OverlayChildLayoutLike[];
+	getViewportTop?: () => number;
+	addMouseListener?: (listener: (event: {
+		action: string;
+		button: string;
+		x: number;
+		y: number;
+	}) => boolean | undefined) => () => void;
 }
 
 let activeOverlay: ActiveOverlay | null = null;
@@ -209,6 +230,40 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, value));
 }
 
+function asFiniteNumber(value: unknown): number | undefined {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return undefined;
+	}
+	return value;
+}
+
+function resolveEditorTopRow(tuiLike: OverlayTuiLike | null): number | undefined {
+	if (!tuiLike) {
+		return undefined;
+	}
+	const layouts = tuiLike.childLayouts;
+	if (!Array.isArray(layouts) || layouts.length < 3) {
+		return undefined;
+	}
+	const editorLayout = layouts[layouts.length - 3];
+	const startRow = asFiniteNumber(editorLayout?.startRow);
+	if (startRow === undefined) {
+		return undefined;
+	}
+	const viewportTop = asFiniteNumber(tuiLike.getViewportTop?.()) ?? 0;
+	return Math.floor(startRow - viewportTop);
+}
+
+function resolveResponsiveOffsetY(tuiLike: OverlayTuiLike | null): number {
+	const termHeight = asFiniteNumber(tuiLike?.terminal?.rows);
+	const editorTopRow = resolveEditorTopRow(tuiLike);
+	if (termHeight === undefined || editorTopRow === undefined) {
+		return OVERLAY_OFFSET_Y;
+	}
+	const targetBottomExclusive = editorTopRow - OVERLAY_INPUT_TOP_GAP_ROWS;
+	return targetBottomExclusive - (termHeight - OVERLAY_MARGIN);
+}
+
 function isEscapeKey(data: string): boolean {
 	return data === "\u001b";
 }
@@ -234,6 +289,16 @@ function showOverlay(
 
 	const overlayId = Symbol("system-overlay");
 	let closeRequested: (() => void) | null = null;
+	let resolvedOffsetY = OVERLAY_OFFSET_Y;
+	const overlayOptionsState: OverlayOptionsLike = {
+		anchor: "bottom-right",
+		offsetX: OVERLAY_OFFSET_X,
+		offsetY: resolvedOffsetY,
+		margin: OVERLAY_MARGIN,
+		nonCapturing: true,
+		maxHeight: 8,
+		width: "40%",
+	};
 	activeOverlay = {
 		id: overlayId,
 		close: () => {
@@ -244,15 +309,9 @@ function showOverlay(
 	void ctx.ui
 		.custom<void>(
 			(tui, _theme, _keybindings, done) => {
-				const tuiLike = tui as {
-					terminal?: { columns?: number; rows?: number };
-					addMouseListener?: (listener: (event: {
-						action: string;
-						button: string;
-						x: number;
-						y: number;
-					}) => boolean | undefined) => () => void;
-				};
+				const tuiLike = tui as OverlayTuiLike;
+				resolvedOffsetY = resolveResponsiveOffsetY(tuiLike);
+				overlayOptionsState.offsetY = resolvedOffsetY;
 
 				let closed = false;
 				const closeOverlay = () => {
@@ -300,6 +359,10 @@ function showOverlay(
 
 				return {
 					render(width: number): string[] {
+						// Keep overlay anchored to the current editor top as it grows/shrinks.
+						resolvedOffsetY = resolveResponsiveOffsetY(tuiLike);
+						overlayOptionsState.offsetY = resolvedOffsetY;
+
 						const panelWidth = Math.max(
 							ERROR_OVERLAY_MIN_WIDTH,
 							Math.min(width - 2, ERROR_OVERLAY_MAX_WIDTH),
@@ -355,7 +418,7 @@ function showOverlay(
 
 						let row = marginTop + Math.max(0, availHeight - rows.length);
 						let col = marginLeft + Math.max(0, availWidth - overlayWidth);
-						row += OVERLAY_OFFSET_Y;
+						row += resolvedOffsetY;
 						col += OVERLAY_OFFSET_X;
 						row = clamp(row, marginTop, termHeight - marginBottom - rows.length);
 						col = clamp(col, marginLeft, termWidth - marginRight - overlayWidth);
@@ -386,15 +449,7 @@ function showOverlay(
 			},
 			{
 				overlay: true,
-				overlayOptions: {
-					anchor: "bottom-right",
-					offsetX: OVERLAY_OFFSET_X,
-					offsetY: OVERLAY_OFFSET_Y,
-					margin: OVERLAY_MARGIN,
-					nonCapturing: true,
-					maxHeight: 8,
-					width: "40%",
-				},
+				overlayOptions: overlayOptionsState,
 			},
 		)
 		.finally(() => {

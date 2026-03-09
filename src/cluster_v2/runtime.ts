@@ -14,6 +14,7 @@ import { emitClusterV2LeaderOffline, emitClusterV2LeaderRecovered } from "./even
 import { createEmbeddingClient, createEmbeddingHandlers } from "./services/embedding.js";
 import { connectBusClient, createBusService, type BusHandle } from "./services/bus.js";
 import { maybeStartDiscordCollector, type DiscordCollectorHandle } from "./services/discord/index.js";
+import { maybeStartTwitterCollector, type TwitterCollectorHandle } from "./services/twitter/index.js";
 import { FollowerRegistryCache } from "./services/registry-cache.js";
 import { ServiceRegistry } from "./services/registry.js";
 
@@ -461,6 +462,7 @@ async function tryServeAsLeader(params: ClusterV2InitParams): Promise<ClusterV2S
 	});
 
 	let discordCollector: DiscordCollectorHandle | null = null;
+	let twitterCollector: TwitterCollectorHandle | null = null;
 	try {
 		discordCollector = await maybeStartDiscordCollector(logContext);
 	} catch (error) {
@@ -469,10 +471,21 @@ async function tryServeAsLeader(params: ClusterV2InitParams): Promise<ClusterV2S
 		});
 		discordCollector = null;
 	}
+	try {
+		twitterCollector = await maybeStartTwitterCollector(logContext);
+	} catch (error) {
+		logClusterEvent("warn", "twitter_collector_start_failed", logContext, {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		twitterCollector = null;
+	}
 
 	const extraServices: ServiceDescriptor[] = [];
 	if (discordCollector) {
 		extraServices.push(discordCollector.descriptor);
+	}
+	if (twitterCollector) {
+		extraServices.push(twitterCollector.descriptor);
 	}
 
 	const registry = new ServiceRegistry();
@@ -522,6 +535,10 @@ async function tryServeAsLeader(params: ClusterV2InitParams): Promise<ClusterV2S
 		if (discordCollector) {
 			await discordCollector.close();
 			discordCollector = null;
+		}
+		if (twitterCollector) {
+			await twitterCollector.close();
+			twitterCollector = null;
 		}
 		bus.close();
 		await connection.close();

@@ -17,7 +17,13 @@ import {
 	onClusterV2DiscordChannelBatch,
 	onClusterV2LeaderOffline,
 	onClusterV2LeaderRecovered,
+	onClusterV2TwitterCollectorStartupFailed,
+	onClusterV2TwitterPullBatch,
+	onClusterV2TwitterPullFailed,
 	type ClusterV2DiscordChannelBatchEvent,
+	type ClusterV2TwitterCollectorStartupFailedEvent,
+	type ClusterV2TwitterPullBatchEvent,
+	type ClusterV2TwitterPullFailedEvent,
 	type ClusterV2Service,
 } from "../cluster_v2/index.js";
 import { setMemoryWorkersEmbeddingProvider, closeMemorySearchManagers } from "../memory/runtime/index.js";
@@ -52,6 +58,7 @@ export async function initSubsystems(
 	const agentId = deriveAgentId(ctx.cwd);
 	const sessionManager = (ctx as any).sessionManager;
 	const getSessionId = () => sessionManager?.getSessionId?.() ?? "unknown";
+	const disposers: Array<() => void> = [];
 
 	// 1. LSP
 	LSP.init(ctx.cwd);
@@ -62,39 +69,25 @@ export async function initSubsystems(
 	const useClusterV2 =
 		process.env.MONO_PILOT_CLUSTER_VERSION === "2" || process.env.MONO_PILOT_CLUSTER_V2 === "1";
 
-	if (settings.enabled && settings.provider === "local") {
-		if (useClusterV2) {
-			cluster = await initClusterV2({
-				...settings.local,
-				agentId,
-				displayName: options?.displayName,
-				getSessionId,
-			});
-			activeClusterVersion = "v2";
-		} else {
-			cluster = await initCluster({
-				...settings.local,
-				agentId,
-				displayName: options?.displayName,
-				getSessionId,
-			});
-			activeClusterVersion = "v1";
-		}
-		setMemoryWorkersEmbeddingProvider(cluster.embedding);
-	}
-
-	if (settings.enabled && settings.sync.onSessionStart) {
-		startMemoryWarmupInBackground(ctx, { workspaceDir: ctx.cwd, agentId });
-	}
-
-	// 4. Bus (message injection into agent conversation)
-	const bus = cluster?.bus ?? null;
-	const disposers: Array<() => void> = [];
-
-	if (activeClusterVersion === "v2") {
+	if (useClusterV2) {
 		disposers.push(
 			onClusterV2DiscordChannelBatch((event) => {
 				publishDiscordChannelBatchSystemEvent(ctx, event);
+			}),
+		);
+		disposers.push(
+			onClusterV2TwitterPullBatch((event) => {
+				publishTwitterPullBatchSystemEvent(ctx, event);
+			}),
+		);
+		disposers.push(
+			onClusterV2TwitterPullFailed((event) => {
+				publishTwitterPullFailedSystemEvent(ctx, event);
+			}),
+		);
+		disposers.push(
+			onClusterV2TwitterCollectorStartupFailed((event) => {
+				publishTwitterCollectorStartupFailedSystemEvent(ctx, event);
 			}),
 		);
 		disposers.push(
@@ -115,6 +108,41 @@ export async function initSubsystems(
 			}),
 		);
 	}
+
+	try {
+		if (settings.enabled && settings.provider === "local") {
+			if (useClusterV2) {
+				cluster = await initClusterV2({
+					...settings.local,
+					agentId,
+					displayName: options?.displayName,
+					getSessionId,
+				});
+				activeClusterVersion = "v2";
+			} else {
+				cluster = await initCluster({
+					...settings.local,
+					agentId,
+					displayName: options?.displayName,
+					getSessionId,
+				});
+				activeClusterVersion = "v1";
+			}
+			setMemoryWorkersEmbeddingProvider(cluster.embedding);
+		}
+	} catch (error) {
+		for (const dispose of [...disposers].reverse()) {
+			dispose();
+		}
+		throw error;
+	}
+
+	if (settings.enabled && settings.sync.onSessionStart) {
+		startMemoryWarmupInBackground(ctx, { workspaceDir: ctx.cwd, agentId });
+	}
+
+	// 4. Bus (message injection into agent conversation)
+	const bus = cluster?.bus ?? null;
 
 	if (bus) {
 		if (options?.busChannels && options.busChannels.length > 0) {
@@ -255,6 +283,49 @@ function publishDiscordChannelBatchSystemEvent(
 		level: "info",
 		message: `Channel ${channelLabel} collected ${event.count} messages.`,
 		dedupeKey: `discord|channel_batch|${event.scope}|${event.channelId}|${event.sequence}`,
+		toast: false,
+		ctx,
+	});
+}
+
+function publishTwitterPullBatchSystemEvent(
+	ctx: ExtensionContext,
+	event: ClusterV2TwitterPullBatchEvent,
+): void {
+	publishSystemEvent({
+		source: "twitter",
+		level: "info",
+		message: `For You pull complete: ${event.count}/${event.requestedCount} tweets.`,
+		dedupeKey: `twitter|pull_batch|${event.scope}|${event.sequence}`,
+		toast: false,
+		ctx,
+	});
+}
+
+function publishTwitterPullFailedSystemEvent(
+	ctx: ExtensionContext,
+	event: ClusterV2TwitterPullFailedEvent,
+): void {
+	const triggerLabel = event.trigger === "startup" ? "startup" : "interval";
+	publishSystemEvent({
+		source: "twitter",
+		level: "warning",
+		message: `For You pull failed (${triggerLabel}): ${event.error}`,
+		dedupeKey: `twitter|pull_failed|${event.scope}|${event.trigger}`,
+		toast: false,
+		ctx,
+	});
+}
+
+function publishTwitterCollectorStartupFailedSystemEvent(
+	ctx: ExtensionContext,
+	event: ClusterV2TwitterCollectorStartupFailedEvent,
+): void {
+	publishSystemEvent({
+		source: "twitter",
+		level: "warning",
+		message: `Collector startup failed: ${event.error}`,
+		dedupeKey: `twitter|collector_start_failed|${event.scope}`,
 		toast: false,
 		ctx,
 	});
