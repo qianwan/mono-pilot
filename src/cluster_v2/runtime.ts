@@ -10,6 +10,7 @@ import {
 	type ServiceDescriptor,
 } from "./rpc.js";
 import { createClusterLogContext, logClusterEvent, type ClusterLogContext } from "./observability.js";
+import { emitClusterV2LeaderOffline, emitClusterV2LeaderRecovered } from "./events.js";
 import { createEmbeddingClient, createEmbeddingHandlers } from "./services/embedding.js";
 import { connectBusClient, createBusService, type BusHandle } from "./services/bus.js";
 import { maybeStartDiscordCollector, type DiscordCollectorHandle } from "./services/discord/index.js";
@@ -44,7 +45,7 @@ let initializingService: Promise<ClusterV2Service> | null = null;
 const activeLeaderScopes = new Set<string>();
 
 const DEFAULT_CLUSTER_V2_EMBEDDING_MAX_CONCURRENT_REQUESTS = 4;
-const DEFAULT_CLUSTER_V2_EMBEDDING_MAX_TEXTS_PER_REQUEST = 16;
+const DEFAULT_CLUSTER_V2_EMBEDDING_MAX_TEXTS_PER_REQUEST = 4;
 const DEFAULT_CLUSTER_V2_INIT_MAX_ATTEMPTS = 6;
 const DEFAULT_CLUSTER_V2_INIT_RETRY_DELAY_MS = 100;
 
@@ -302,12 +303,26 @@ async function tryFollowAsClient(
 			return;
 		}
 		registryCache.invalidate("leader_disconnect");
+		emitClusterV2LeaderOffline({
+			agentId: params.agentId,
+			sessionId,
+			scope,
+			reason: "follower_disconnect",
+		});
 		transitionConnectionLifecycle(lifecycle, "reconnecting", "follower_disconnect", logContext);
 		lifecycle.assertOpenImpliesConnected(!socket.destroyed, "follower_disconnect");
 		logClusterEvent("warn", "follower_disconnected_re_elect", logContext);
 		activeService = null;
 		reElecting = initClusterV2(cachedParams)
-			.then(() => {
+			.then((next) => {
+				if (next.role === "leader" || next.role === "follower") {
+					emitClusterV2LeaderRecovered({
+						agentId: params.agentId,
+						sessionId,
+						scope,
+						role: next.role,
+					});
+				}
 				transitionConnectionLifecycle(lifecycle, "disconnected", "re_elect_complete", logContext);
 				reElecting = null;
 			})

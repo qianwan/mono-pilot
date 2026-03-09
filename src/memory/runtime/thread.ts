@@ -1,7 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import type { WorkerInitData, WorkerRequest, WorkerOutboundMessage } from "./index.js";
 import type { MemorySearchManager } from "../types.js";
-import type { EmbedFn } from "../index-manager.js";
+import type { EmbedFn, MemoryAutoSyncEvent } from "../index-manager.js";
 import { MemoryIndexManager } from "../index-manager.js";
 import { memoryLog } from "../log.js";
 
@@ -35,6 +35,9 @@ try {
 		settings: init.settings,
 		embedFn: embedViaMainThread,
 		embedModel: init.embedModel,
+		onAutoSyncEvent: (event: MemoryAutoSyncEvent) => {
+			post({ type: "autoSyncEvent", event });
+		},
 	});
 	memoryLog.info("worker initialized", { agentId: init.agentId });
 
@@ -85,7 +88,14 @@ async function handleRequest(req: WorkerRequest): Promise<void> {
 				result = await manager.search(req.query, req.opts);
 				break;
 			case "sync":
-				await manager.sync?.(req.opts);
+				await manager.sync?.({
+					...req.opts,
+					onWorkDetected: req.notifyWorkDetected
+						? () => {
+							post({ type: "syncWorkDetected", requestId: req.id });
+						}
+						: undefined,
+				});
 				result = undefined;
 				break;
 			case "syncDirty":

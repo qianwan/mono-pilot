@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { BusHandle } from "../cluster/bus.js";
 import type { MessagePushPayload } from "../cluster/protocol.js";
 import { closeCluster, getActiveClusterService } from "../cluster/init.js";
+import { publishSystemEvent } from "./system-events.js";
 import {
 	closeClusterV2,
 	getActiveClusterV2Service,
@@ -352,6 +353,16 @@ function notify(
 	message: string,
 	level: NotifyLevel,
 ): void {
+	if (level !== "info") {
+		publishSystemEvent({
+			source: "cluster",
+			level,
+			message,
+			toast: false,
+			ctx,
+		});
+	}
+
 	if (ctx.hasUI && ctx.ui?.notify) {
 		ctx.ui.notify(message, level);
 	} else {

@@ -57,7 +57,7 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
 - `switch-mode.ts` (`SwitchMode`)
   - Switch runtime interaction mode (tool supports `plan`; `/plan` toggles Plan/Agent).
 - `apply-patch.ts` / `apply-patch-description.md` (`ApplyPatch`)
-  - Apply single-file patches in `*** Begin Patch` format.
+  - Apply single-file patches in `*** Begin Patch` format (SFTP auto-upload is attached by the SFTP extension hook).
 
 ### Brief tools
 

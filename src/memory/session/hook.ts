@@ -15,6 +15,7 @@ import { buildSessionMemoryEntry, writeSessionMemoryFile } from "./entry.js";
 import { formatSessionTimestampParts, buildMemoryFilename, getAgentMemoryDir } from "./paths.js";
 import { readSessionExcerpt } from "./session-reader.js";
 import { flushSessionTranscript } from "./transcript/flush.js";
+import { publishSystemEvent } from "../../extensions/system-events.js";
 
 const SESSION_EXCERPT_MAX_MESSAGES = 50;
 
@@ -51,6 +52,44 @@ trigger: "session-switch" | "session-compact" | "delta-threshold";
 		sessionTranscriptWritten: transcriptResult.written,
 		sessionTranscriptPath: transcriptResult.filePath,
 		sessionTranscriptLastLine: transcriptResult.lastLine,
+	});
+
+	if (memoryResult.written) {
+		publishSystemEvent({
+			source: "memory",
+			level: "info",
+			message: `Session memory flush persisted (${params.trigger}).`,
+			dedupeKey: `memory|session_memory_flush|${params.trigger}`,
+			toast: false,
+			ctx: params.ctx,
+		});
+	}
+
+	if (transcriptResult.written) {
+		publishSystemEvent({
+			source: "memory",
+			level: "info",
+			message: `Session transcript flush persisted (${params.trigger}).`,
+			dedupeKey: `memory|session_transcript_flush|${params.trigger}`,
+			toast: false,
+			ctx: params.ctx,
+		});
+	}
+}
+
+function notifySessionFlushFailure(
+	ctx: ExtensionContext,
+	trigger: "session-switch" | "session-compact" | "delta-threshold",
+	error: unknown,
+): void {
+	const message = error instanceof Error ? error.message : String(error);
+	publishSystemEvent({
+		source: "memory",
+		level: "warning",
+		message: `Session flush failed (${trigger}): ${message}`,
+		dedupeKey: `memory|session_flush_failed|${trigger}`,
+		toast: false,
+		ctx,
 	});
 }
 
@@ -159,6 +198,7 @@ export function registerSessionMemoryHook(pi: ExtensionAPI): void {
 		} catch (error) {
 			console.warn(`[memory] session switch flush failed: ${String(error)}`);
 			memoryLog.warn("session switch flush failed", { error: String(error) });
+			notifySessionFlushFailure(ctx, "session-switch", error);
 			// Best effort: session memory is non-critical.
 		}
 	});
@@ -168,6 +208,7 @@ export function registerSessionMemoryHook(pi: ExtensionAPI): void {
 		} catch (error) {
 			console.warn(`[memory] session_before_compact flush failed: ${String(error)}`);
 			memoryLog.warn("session_before_compact flush failed", { error: String(error) });
+			notifySessionFlushFailure(ctx, "session-compact", error);
 			// Best effort: session memory is non-critical.
 		}
 	});
@@ -177,6 +218,7 @@ export function registerSessionMemoryHook(pi: ExtensionAPI): void {
 		} catch (error) {
 			console.warn(`[memory] turn_end delta flush failed: ${String(error)}`);
 			memoryLog.warn("turn_end delta flush failed", { error: String(error) });
+			notifySessionFlushFailure(ctx, "delta-threshold", error);
 		}
 	});
 }

@@ -26,10 +26,12 @@ export interface DiscordCollectorConfig {
 	outputPath: string;
 	includeRawPayload: boolean;
 	maxReconnectDelayMs: number;
+	systemEventBatchSize: number;
 }
 
 const DEFAULT_OUTPUT_PATH = join(homedir(), ".mono-pilot", "discord", "messages.jsonl");
 const DEFAULT_RECONNECT_DELAY_MS = 30_000;
+const DEFAULT_SYSTEM_EVENT_BATCH_SIZE = 20;
 const DEFAULT_SCOPES = ["rpc", "messages.read", "identify"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -137,6 +139,17 @@ function normalizeReconnectDelay(value: unknown): number {
 	return normalized;
 }
 
+function normalizeSystemEventBatchSize(value: unknown): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) {
+		return DEFAULT_SYSTEM_EVENT_BATCH_SIZE;
+	}
+	const normalized = Math.floor(value);
+	if (normalized <= 0) {
+		return DEFAULT_SYSTEM_EVENT_BATCH_SIZE;
+	}
+	return normalized;
+}
+
 export function extractDiscordCollectorConfig(
 	config: Record<string, unknown> | undefined,
 ): DiscordCollectorConfig {
@@ -149,6 +162,7 @@ export function extractDiscordCollectorConfig(
 			outputPath: DEFAULT_OUTPUT_PATH,
 			includeRawPayload: false,
 			maxReconnectDelayMs: DEFAULT_RECONNECT_DELAY_MS,
+			systemEventBatchSize: DEFAULT_SYSTEM_EVENT_BATCH_SIZE,
 		};
 	}
 
@@ -170,5 +184,6 @@ export function extractDiscordCollectorConfig(
 		outputPath: normalizeOutputPath(readString(discord.outputPath)),
 		includeRawPayload: discord.includeRawPayload === true,
 		maxReconnectDelayMs: normalizeReconnectDelay(discord.maxReconnectDelayMs),
+		systemEventBatchSize: normalizeSystemEventBatchSize(discord.systemEventBatchSize),
 	};
 }

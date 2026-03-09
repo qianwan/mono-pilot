@@ -3,6 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { publishSystemEvent } from "./system-events.js";
 
 interface SftpTargetConfig {
 	name?: string;
@@ -199,8 +200,23 @@ function registerConnectionLifecycle(key: string, client: SftpClientInstance): v
 
 async function createSftpClient(): Promise<SftpClientInstance> {
 	const { default: SftpClient } = await import("ssh2-sftp-client");
-	const ClientCtor = SftpClient as unknown as { new (): SftpClientInstance };
-	return new ClientCtor();
+	const ClientCtor = SftpClient as unknown as {
+		new (
+			clientName?: string,
+			callbacks?: Record<string, (...args: unknown[]) => void>,
+		): SftpClientInstance;
+	};
+	return new ClientCtor("mono-pilot-sftp", {
+		error: () => {
+			// Operation-level errors are handled by promise rejections.
+		},
+		end: () => {
+			// Suppress default global end log spam in interactive TUI.
+		},
+		close: () => {
+			// Suppress default global close log spam in interactive TUI.
+		},
+	});
 }
 
 async function getOrCreateConnection(options: {
@@ -606,8 +622,20 @@ function notify(
 	message: string,
 	level: NotifyLevel,
 ): void {
+	if (level !== "info") {
+		publishSystemEvent({
+			source: "sftp",
+			level,
+			message,
+			toast: false,
+			ctx,
+		});
+	}
+
 	if (ctx.hasUI && ctx.ui?.notify) {
-		ctx.ui.notify(message, level);
+		if (level === "info") {
+			ctx.ui.notify(message, level);
+		}
 		return;
 	}
 	const prefix = level === "error" ? "[error]" : level === "warning" ? "[warn]" : "[info]";

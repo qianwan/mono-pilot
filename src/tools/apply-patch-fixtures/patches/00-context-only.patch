@@ -1,0 +1,9 @@
+*** Begin Patch
+*** Update File: {{FILE}}
+@@
+## Block A
+-  foo();
+-  bar();
++  foo();
++  zap();
+*** End Patch

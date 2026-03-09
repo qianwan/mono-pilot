@@ -11,8 +11,13 @@ import { deriveAgentId } from "../agents-paths.js";
 import { loadResolvedMemorySearchConfig } from "../memory/config/loader.js";
 import { initCluster, closeCluster, type ClusterService } from "../cluster/init.js";
 import {
+	getActiveClusterV2Service,
 	initClusterV2,
 	closeClusterV2,
+	onClusterV2DiscordChannelBatch,
+	onClusterV2LeaderOffline,
+	onClusterV2LeaderRecovered,
+	type ClusterV2DiscordChannelBatchEvent,
 	type ClusterV2Service,
 } from "../cluster_v2/index.js";
 import { setMemoryWorkersEmbeddingProvider, closeMemorySearchManagers } from "../memory/runtime/index.js";
@@ -20,11 +25,13 @@ import { warmMemorySearch } from "../memory/warm.js";
 import type { BusHandle } from "../cluster/bus.js";
 import { setMailBoxHandle } from "./game/mailbox.js";
 import type { MessagePushPayload } from "../cluster/protocol.js";
+import { publishSystemEvent } from "./system-events.js";
 
 let activeClusterVersion: "v1" | "v2" | null = null;
 
 export interface SubsystemHandles {
 	bus: BusHandle | null;
+	dispose?: () => void;
 }
 
 export interface SubsystemOptions {
@@ -76,10 +83,39 @@ export async function initSubsystems(
 		setMemoryWorkersEmbeddingProvider(cluster.embedding);
 	}
 
-	await warmMemorySearch({ workspaceDir: ctx.cwd, agentId });
+	if (settings.enabled && settings.sync.onSessionStart) {
+		startMemoryWarmupInBackground(ctx, { workspaceDir: ctx.cwd, agentId });
+	}
 
 	// 4. Bus (message injection into agent conversation)
 	const bus = cluster?.bus ?? null;
+	const disposers: Array<() => void> = [];
+
+	if (activeClusterVersion === "v2") {
+		disposers.push(
+			onClusterV2DiscordChannelBatch((event) => {
+				publishDiscordChannelBatchSystemEvent(ctx, event);
+			}),
+		);
+		disposers.push(
+			onClusterV2LeaderOffline(() => {
+				publishSystemEvent({
+					source: "cluster",
+					level: "warning",
+					message: "Leader offline. Re-election in progress.",
+					dedupeKey: "cluster|leader_offline",
+					toast: false,
+					ctx,
+				});
+			}),
+		);
+		disposers.push(
+			onClusterV2LeaderRecovered(() => {
+				void publishClusterV2LeaderRecoveredEvent(ctx);
+			}),
+		);
+	}
+
 	if (bus) {
 		if (options?.busChannels && options.busChannels.length > 0) {
 			await bus.subscribe(options.busChannels);
@@ -93,8 +129,16 @@ export async function initSubsystems(
 		});
 	}
 	setMailBoxHandle(bus ?? null);
+	const dispose =
+		disposers.length > 0
+			? () => {
+				for (const fn of [...disposers].reverse()) {
+					fn();
+				}
+			}
+			: undefined;
 
-	return { bus };
+	return { bus, dispose };
 }
 
 /**
@@ -102,6 +146,7 @@ export async function initSubsystems(
  */
 export async function shutdownSubsystems(handles: SubsystemHandles | null): Promise<void> {
 	try {
+		handles?.dispose?.();
 		// Bus
 		if (handles?.bus) handles.bus.close();
 		setMailBoxHandle(null);
@@ -117,6 +162,166 @@ export async function shutdownSubsystems(handles: SubsystemHandles | null): Prom
 	} catch (err) {
 		console.warn(`[subsystems] shutdown failed: ${String(err)}`);
 	}
+}
+
+interface LeaderAgent {
+	agentId: string;
+	displayName?: string;
+	role: "leader" | "follower";
+	channels: string[];
+}
+
+function formatLeaderLabel(leader: LeaderAgent): string {
+	const name = leader.displayName?.trim();
+	return name ? `${name} (${leader.agentId})` : leader.agentId;
+}
+
+function buildLeaderKey(leaders: LeaderAgent[]): string {
+	return leaders
+		.map((leader) => leader.agentId)
+		.sort()
+		.join(",");
+}
+
+function buildLeaderLabel(leaders: LeaderAgent[]): string {
+	return leaders.map((leader) => formatLeaderLabel(leader)).join(", ");
+}
+
+async function publishClusterV2LeaderRecoveredEvent(ctx: ExtensionContext): Promise<void> {
+	const active = getActiveClusterV2Service();
+	const bus = active?.bus ?? null;
+	if (!bus) {
+		publishSystemEvent({
+			source: "cluster",
+			level: "info",
+			message: "Re-election complete.",
+			dedupeKey: "cluster|leader_elected",
+			toast: true,
+			ctx,
+		});
+		return;
+	}
+
+	try {
+		const roster = await bus.roster();
+		const leaders = (roster.agents as LeaderAgent[]).filter((agent) => agent.role === "leader");
+		if (leaders.length === 0) {
+			publishSystemEvent({
+				source: "cluster",
+				level: "info",
+				message: "Re-election complete.",
+				dedupeKey: "cluster|leader_elected",
+				toast: true,
+				ctx,
+			});
+			return;
+		}
+
+		const leaderKey = buildLeaderKey(leaders);
+		const leaderLabel = buildLeaderLabel(leaders);
+		publishSystemEvent({
+			source: "cluster",
+			level: "info",
+			message: `Re-election complete. Leader: ${leaderLabel}.`,
+			dedupeKey: `cluster|leader_elected|${leaderKey}`,
+			toast: true,
+			ctx,
+		});
+	} catch {
+		publishSystemEvent({
+			source: "cluster",
+			level: "info",
+			message: "Re-election complete.",
+			dedupeKey: "cluster|leader_elected",
+			toast: true,
+			ctx,
+		});
+	}
+}
+
+function publishDiscordChannelBatchSystemEvent(
+	ctx: ExtensionContext,
+	event: ClusterV2DiscordChannelBatchEvent,
+): void {
+	const channelLabel =
+		event.channelAlias?.trim() ||
+		(event.guildName?.trim() && event.channelName?.trim()
+			? `${event.guildName.trim()} / ${event.channelName.trim()}`
+			: event.channelName?.trim()) ||
+		event.channelId;
+
+	publishSystemEvent({
+		source: "discord",
+		level: "info",
+		message: `Channel ${channelLabel} collected ${event.count} messages.`,
+		dedupeKey: `discord|channel_batch|${event.scope}|${event.channelId}|${event.sequence}`,
+		toast: false,
+		ctx,
+	});
+}
+
+function startMemoryWarmupInBackground(
+	ctx: ExtensionContext,
+	params: { workspaceDir: string; agentId: string },
+): void {
+	let startNotified = false;
+	const notifyWarmupStartIfNeeded = () => {
+		if (startNotified) {
+			return;
+		}
+		startNotified = true;
+		publishSystemEvent({
+			source: "memory",
+			level: "info",
+			message: "Memory warmup in progress.",
+			dedupeKey: `memory|warmup|start|${params.agentId}`,
+			toast: false,
+			ctx,
+		});
+	};
+
+	void warmMemorySearch({
+		...params,
+		onWorkDetected: notifyWarmupStartIfNeeded,
+	})
+		.then((result) => {
+			if (!result.attempted || !startNotified) {
+				return;
+			}
+			if (result.succeeded) {
+				publishSystemEvent({
+					source: "memory",
+					level: "info",
+					message: "Memory warmup complete.",
+					dedupeKey: `memory|warmup|done|${params.agentId}`,
+					toast: false,
+					ctx,
+				});
+				return;
+			}
+			publishSystemEvent({
+				source: "memory",
+				level: "warning",
+				message: `Memory warmup failed: ${result.error ?? "unknown error"}`,
+				dedupeKey: `memory|warmup|failed|${params.agentId}`,
+				toast: false,
+				ctx,
+			});
+		})
+		.catch((error) => {
+			if (!startNotified) {
+				return;
+			}
+			const message = error instanceof Error ? error.message : String(error);
+			publishSystemEvent({
+				source: "memory",
+				level: "warning",
+				message: `Memory warmup failed: ${message}`,
+				dedupeKey: `memory|warmup|failed|${params.agentId}`,
+				toast: false,
+				ctx,
+			});
+		});
 }
 
 // --- Bus message injection (debounced) ---

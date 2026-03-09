@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { buildMemoryIndex, type BuildMode } from "../../memory/build-memory.js";
+import { publishSystemEvent } from "../system-events.js";
 
 type NotifyLevel = "info" | "warning" | "error";
 
@@ -76,6 +77,14 @@ function notify(
 	message: string,
 	level: NotifyLevel,
 ): void {
+	publishSystemEvent({
+		source: "memory",
+		level,
+		message,
+		toast: false,
+		ctx,
+	});
+
 	if (ctx.hasUI && ctx.ui?.notify) {
 		ctx.ui.notify(message, level);
 	} else {

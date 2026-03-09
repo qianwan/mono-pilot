@@ -1,0 +1,7 @@
+*** Begin Patch
+*** Update File: {{FILE}}
+@@ -4,2 +4,3 @@
+  foo();
++  alpha();
+  bar();
+*** End Patch

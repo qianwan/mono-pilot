@@ -24,6 +24,16 @@ const SNIPPET_MAX_CHARS = 400;
 /** External embed function injected from main thread. */
 export type EmbedFn = (texts: string[]) => Promise<number[][]>;
 
+export interface MemoryAutoSyncEvent {
+	reason: "search" | "watch" | "interval";
+	phase: "start" | "complete" | "failed";
+	indexed?: number;
+	staleDeleted?: number;
+	files?: number;
+	durationMs?: number;
+	error?: string;
+}
+
 export class MemoryIndexManager implements MemorySearchManager {
 	private readonly agentId: string;
 	private readonly workspaceDir: string;
@@ -43,6 +53,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 	private watchTimer: NodeJS.Timeout | null = null;
 	private intervalTimer: NodeJS.Timeout | null = null;
 	private syncInProgress = false;
+	private readonly onAutoSyncEvent?: (event: MemoryAutoSyncEvent) => void;
 
 	private embedFn: EmbedFn | null = null;
 	private embedModel: string | null = null;
@@ -53,12 +64,14 @@ export class MemoryIndexManager implements MemorySearchManager {
 		settings: ResolvedMemorySearchConfig;
 		embedFn?: EmbedFn;
 		embedModel?: string;
+		onAutoSyncEvent?: (event: MemoryAutoSyncEvent) => void;
 	}) {
 		this.agentId = params.agentId;
 		this.workspaceDir = params.workspaceDir;
 		this.settings = params.settings;
 		this.embedFn = params.embedFn ?? null;
 		this.embedModel = params.embedModel ?? null;
+		this.onAutoSyncEvent = params.onAutoSyncEvent;
 		this.memoryDir = getAgentMemoryDir(params.agentId);
 		this.sessionTranscriptsDir = getSessionTranscriptsRootDir(params.agentId);
 		this.includeMemorySource = this.settings.sources.includes("memory");
@@ -278,19 +291,32 @@ export class MemoryIndexManager implements MemorySearchManager {
 		return this.dirty;
 	}
 
-	async sync(params?: { reason?: string; force?: boolean }): Promise<void> {
+	async sync(params?: { reason?: string; force?: boolean; onWorkDetected?: () => void }): Promise<void> {
+		const reason = params?.reason ?? "unknown";
+		const isAutoSyncReason = reason === "search" || reason === "watch" || reason === "interval";
 		if (this.syncInProgress) {
 			memoryLog.debug("sync skipped (already running)", {
 				agentId: this.agentId,
-				reason: params?.reason ?? "unknown",
+				reason,
 			});
 			return;
 		}
 		this.syncInProgress = true;
+		let workDetected = false;
+		const notifyWorkDetected = () => {
+			if (workDetected) {
+				return;
+			}
+			workDetected = true;
+			if (isAutoSyncReason) {
+				this.onAutoSyncEvent?.({ reason, phase: "start" });
+			}
+			params?.onWorkDetected?.();
+		};
 		const start = Date.now();
 		memoryLog.info("sync start", {
 			agentId: this.agentId,
-			reason: params?.reason ?? "unknown",
+			reason,
 			force: params?.force ?? false,
 		});
 		try {
@@ -331,6 +357,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 				if (!params?.force && record?.hash === entry.hash) {
 					continue;
 				}
+				notifyWorkDetected();
 				await indexMemoryFile({
 					db: this.db,
 					agentId: this.agentId,
@@ -371,6 +398,7 @@ export class MemoryIndexManager implements MemorySearchManager {
 				for (const stale of staleRows) {
 					const staleSource = this.resolveSourceForPath(stale.path) ?? source;
 					if (activePaths.has(stale.path) && staleSource === source) continue;
+					notifyWorkDetected();
 					this.db
 						.prepare(`DELETE FROM ${FILES_TABLE} WHERE path = ? AND source = ? AND agent_id = ?`)
 						.run(stale.path, source, this.agentId);
@@ -400,14 +428,34 @@ export class MemoryIndexManager implements MemorySearchManager {
 			}
 
 			this.dirty = false;
+			const durationMs = Date.now() - start;
 			memoryLog.info("sync complete", {
 				agentId: this.agentId,
-				reason: params?.reason ?? "unknown",
+				reason,
 				indexed,
 				staleDeleted,
 				files: entries.length,
-				durationMs: Date.now() - start,
+				durationMs,
 			});
+			if (isAutoSyncReason && workDetected) {
+				this.onAutoSyncEvent?.({
+					reason,
+					phase: "complete",
+					indexed,
+					staleDeleted,
+					files: entries.length,
+					durationMs,
+				});
+			}
+		} catch (error) {
+			if (isAutoSyncReason) {
+				this.onAutoSyncEvent?.({
+					reason,
+					phase: "failed",
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			throw error;
 		} finally {
 			this.syncInProgress = false;
 		}

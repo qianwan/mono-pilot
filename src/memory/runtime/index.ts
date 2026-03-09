@@ -11,6 +11,7 @@ import type {
 } from "../types.js";
 import type { ResolvedMemorySearchConfig } from "../config/types.js";
 import { loadResolvedMemorySearchConfig } from "../config/loader.js";
+import { publishSystemEvent } from "../../extensions/system-events.js";
 
 // --- Protocol types (shared with thread.ts) ---
 
@@ -21,9 +22,11 @@ export interface WorkerInitData {
 	embedModel?: string;
 }
 
+type WorkerSyncOptions = Omit<MemorySearchSyncOptions, "onWorkDetected">;
+
 export type WorkerRequest =
 	| { id: number; type: "search"; query: string; opts?: MemorySearchQueryOptions }
-	| { id: number; type: "sync"; opts?: MemorySearchSyncOptions }
+	| { id: number; type: "sync"; opts?: WorkerSyncOptions; notifyWorkDetected?: boolean }
 	| { id: number; type: "syncDirty" }
 	| { id: number; type: "close" };
 
@@ -41,9 +44,21 @@ export interface WorkerErrorResponse {
 
 export type WorkerResponse = WorkerResultResponse | WorkerErrorResponse;
 
+export interface WorkerAutoSyncEvent {
+	reason: "search" | "watch" | "interval";
+	phase: "start" | "complete" | "failed";
+	indexed?: number;
+	staleDeleted?: number;
+	files?: number;
+	durationMs?: number;
+	error?: string;
+}
+
 export type WorkerNotification =
 	| { type: "ready" }
-	| { type: "dirty"; value: boolean };
+	| { type: "dirty"; value: boolean }
+	| { type: "syncWorkDetected"; requestId: number }
+	| { type: "autoSyncEvent"; event: WorkerAutoSyncEvent };
 
 export type WorkerOutboundMessage = WorkerResponse | WorkerNotification;
 
@@ -73,6 +88,7 @@ class WorkerMemoryProxy implements MemorySearchManager {
 	private worker: Worker;
 	private nextId = 1;
 	private pending = new Map<number, Pending>();
+	private syncWorkDetectedHandlers = new Map<number, () => void>();
 	private dirty = true;
 	private ready: Promise<void>;
 
@@ -116,6 +132,19 @@ class WorkerMemoryProxy implements MemorySearchManager {
 				this.dirty = msg.value;
 				return;
 			}
+			if (msg.type === "autoSyncEvent") {
+				this.publishAutoSyncEvent(msg.event);
+				return;
+			}
+			if (msg.type === "syncWorkDetected") {
+				const handler = this.syncWorkDetectedHandlers.get(msg.requestId);
+				if (!handler) {
+					return;
+				}
+				this.syncWorkDetectedHandlers.delete(msg.requestId);
+				handler();
+				return;
+			}
 			if (msg.type === "ready") return;
 			// Embed request from worker — forward to main-thread provider
 			if ((msg as any).type === "embed") {
@@ -126,6 +155,7 @@ class WorkerMemoryProxy implements MemorySearchManager {
 			const pending = this.pending.get(msg.id);
 			if (!pending) return;
 			this.pending.delete(msg.id);
+			this.syncWorkDetectedHandlers.delete(msg.id);
 			if (msg.type === "error") {
 				pending.reject(new Error(msg.message));
 			} else {
@@ -169,7 +199,35 @@ class WorkerMemoryProxy implements MemorySearchManager {
 
 	async sync(opts?: MemorySearchSyncOptions): Promise<void> {
 		await this.ready;
-		await this.send({ type: "sync", opts });
+		const onWorkDetected = opts?.onWorkDetected;
+		let requestOpts: WorkerSyncOptions | undefined;
+		if (opts) {
+			const { onWorkDetected: _ignored, ...rest } = opts;
+			requestOpts = rest;
+		}
+		const id = this.nextId++;
+		await new Promise<void>((resolve, reject) => {
+			if (onWorkDetected) {
+				this.syncWorkDetectedHandlers.set(id, onWorkDetected);
+			}
+			this.pending.set(id, {
+				resolve: () => {
+					this.syncWorkDetectedHandlers.delete(id);
+					resolve();
+				},
+				reject: (err) => {
+					this.syncWorkDetectedHandlers.delete(id);
+					reject(err);
+				},
+			});
+			const req: WorkerRequest = {
+				id,
+				type: "sync",
+				opts: requestOpts,
+				notifyWorkDetected: Boolean(onWorkDetected),
+			};
+			this.worker.postMessage(req);
+		});
 	}
 
 	async syncDirty(): Promise<string[]> {
@@ -218,6 +276,7 @@ class WorkerMemoryProxy implements MemorySearchManager {
 		// Force-terminate without waiting — don't block process exit.
 		this.worker.terminate().catch(() => {});
 		this.pending.clear();
+		this.syncWorkDetectedHandlers.clear();
 	}
 
 	private send(partial: { type: string; [key: string]: unknown }): Promise<unknown> {
@@ -236,7 +295,43 @@ class WorkerMemoryProxy implements MemorySearchManager {
 		}
 	}
 
+	private publishAutoSyncEvent(event: WorkerAutoSyncEvent): void {
+		const reasonLabel = event.reason === "search" ? "on-search" : event.reason;
+		if (event.phase === "start") {
+			publishSystemEvent({
+				source: "memory",
+				level: "info",
+				message: `Memory sync in progress (${reasonLabel}).`,
+				dedupeKey: `memory|auto_sync|${event.reason}|start`,
+				toast: false,
+			});
+			return;
+		}
+
+		if (event.phase === "complete") {
+			const indexed = event.indexed ?? 0;
+			const removed = event.staleDeleted ?? 0;
+			publishSystemEvent({
+				source: "memory",
+				level: "info",
+				message: `Memory sync complete (${reasonLabel}): indexed=${indexed}, removed=${removed}.`,
+				dedupeKey: `memory|auto_sync|${event.reason}|complete`,
+				toast: false,
+			});
+			return;
+		}
+
+		publishSystemEvent({
+			source: "memory",
+			level: "warning",
+			message: `Memory sync failed (${reasonLabel}): ${event.error ?? "unknown error"}`,
+			dedupeKey: `memory|auto_sync|${event.reason}|failed`,
+			toast: false,
+		});
+	}
+
 	private rejectAll(err: Error): void {
+		this.syncWorkDetectedHandlers.clear();
 		for (const pending of this.pending.values()) {
 			pending.reject(err);
 		}

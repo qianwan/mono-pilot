@@ -30,9 +30,11 @@ import busSendExtension, { setBusSendHandle } from "../tools/bus-send.js";
 import mailboxExtension from "../tools/mailbox.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
 import { registerBuildMemoryCommand } from "./commands/build-memory.js";
-import { registerBusCommands, setBusHandle } from "./commands/bus.js";
+import { registerClusterCommands, setClusterHandle } from "./cluster.js";
+import { registerStatusCommand } from "./status.js";
 import { registerImageModelCommands } from "./commands/image-model.js";
 import { registerSftpCommands } from "./sftp.js";
+import { registerSystemEvents } from "./system-events.js";
 import { initSubsystems, shutdownSubsystems, type SubsystemHandles } from "./lifecycle.js";
 
 const toolExtensions: ExtensionFactory[] = [
@@ -72,8 +74,10 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	}
 
 	registerSessionMemoryHook(pi);
+	registerSystemEvents(pi);
 	registerBuildMemoryCommand(pi);
-	registerBusCommands(pi);
+	registerClusterCommands(pi);
+	registerStatusCommand(pi);
 	registerImageModelCommands(pi);
 	registerSftpCommands(pi);
 
@@ -81,7 +85,7 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (handles) {
-			setBusHandle(null);
+			setClusterHandle(null);
 			setBusSendHandle(null);
 			await shutdownSubsystems(handles);
 			handles = null;
@@ -103,7 +107,7 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 				},
 			});
 			handles = h;
-			setBusHandle(h.bus);
+			setClusterHandle(h.bus);
 			setBusSendHandle(h.bus);
 		} catch (err) {
 			console.warn(`[subsystems] init failed: ${String(err)}`);
@@ -115,7 +119,7 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		setBusHandle(null);
+		setClusterHandle(null);
 		setBusSendHandle(null);
 		await shutdownSubsystems(handles);
 		handles = null;

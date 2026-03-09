@@ -6,6 +6,7 @@ import {
 	type DiscordSubscribeEvent,
 } from "../../../config/discord.js";
 import { loadMonoPilotConfigObject } from "../../../config/mono-pilot.js";
+import { emitClusterV2DiscordChannelBatch } from "../../events.js";
 import { logClusterEvent, type ClusterLogContext } from "../../observability.js";
 import type { ServiceDescriptor } from "../../rpc.js";
 import {
@@ -200,6 +201,8 @@ class DiscordCollector implements DiscordCollectorHandle {
 	private readonly guildNameCache = new Map<string, string | null>();
 	private readonly guildNameInFlight = new Map<string, Promise<string | null>>();
 	private readonly channelAliasById = new Map<string, string>();
+	private readonly channelMessageCounts = new Map<string, number>();
+	private readonly channelBatchSequences = new Map<string, number>();
 
 	descriptor: ServiceDescriptor = {
 		name: "discord_intel",
@@ -547,6 +550,40 @@ class DiscordCollector implements DiscordCollectorHandle {
 		}
 
 		this.writer.append(record);
+		this.maybeEmitChannelBatchEvent(eventName, record);
+	}
+
+	private maybeEmitChannelBatchEvent(
+		eventName: DiscordSubscribeEvent,
+		record: PersistedDiscordEvent,
+	): void {
+		if (eventName !== "MESSAGE_CREATE") {
+			return;
+		}
+		if (!record.channelId) {
+			return;
+		}
+
+		const channelId = record.channelId;
+		const nextCount = (this.channelMessageCounts.get(channelId) ?? 0) + 1;
+		if (nextCount < this.config.systemEventBatchSize) {
+			this.channelMessageCounts.set(channelId, nextCount);
+			return;
+		}
+
+		this.channelMessageCounts.set(channelId, 0);
+		const sequence = (this.channelBatchSequences.get(channelId) ?? 0) + 1;
+		this.channelBatchSequences.set(channelId, sequence);
+
+		emitClusterV2DiscordChannelBatch({
+			scope: this.lifecycleContext.scope ?? "default",
+			channelId,
+			channelAlias: record.channelAlias ?? undefined,
+			channelName: record.channelName ?? undefined,
+			guildName: record.guildName ?? undefined,
+			count: this.config.systemEventBatchSize,
+			sequence,
+		});
 	}
 
 	private async resolveChannelContext(

@@ -1,0 +1,8 @@
+*** Begin Patch
+*** Update File: {{FILE}}
+@@ line 8
+-  foo();
+-  bar();
++  foo();
++  buzz();
+*** End Patch

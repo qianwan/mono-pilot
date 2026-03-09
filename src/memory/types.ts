@@ -30,6 +30,8 @@ export interface MemorySearchGetResult {
 export interface MemorySearchSyncOptions {
 	reason?: string;
 	force?: boolean;
+	/** Internal hook (worker-local) for progress signaling. */
+	onWorkDetected?: () => void;
 }
 
 export interface MemorySearchManager {
