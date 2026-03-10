@@ -5,7 +5,7 @@ import { runEmbeddingBatches } from "../embeddings/batch-runner.js";
 import { readEmbeddingCache, writeEmbeddingCache, pruneEmbeddingCache } from "../embeddings/cache.js";
 import type { MemoryChunk } from "./files.js";
 
-const DEFAULT_BATCH_SIZE = 4;
+const DEFAULT_BATCH_SIZE = 2;
 const DEFAULT_BATCH_CONCURRENCY = 2;
 
 export async function embedChunks(params: {
