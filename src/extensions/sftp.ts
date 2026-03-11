@@ -45,6 +45,12 @@ interface ApplyPatchResultDetails {
 	appliedHunks?: number;
 }
 
+interface CodexApplyPatchResultDetails {
+	added: string[];
+	modified: string[];
+	deleted?: string[];
+}
+
 interface SftpClientInstance {
 	on(eventType: string, listener: (...args: unknown[]) => void): void;
 	connect(config: Record<string, unknown>): Promise<unknown>;
@@ -552,29 +558,37 @@ function isApplyPatchResultDetails(value: unknown): value is ApplyPatchResultDet
 	return true;
 }
 
-function shouldSyncForApplyPatch(details: ApplyPatchResultDetails): boolean {
-	if (details.operation === "add") {
-		return true;
-	}
-	if (details.moveTo) {
-		return true;
-	}
-	return typeof details.appliedHunks === "number" && details.appliedHunks > 0;
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
-async function maybeSyncApplyPatchResult(
-	cwd: string,
-	details: ApplyPatchResultDetails,
-	context?: ExtensionContext,
-): Promise<SftpSyncDetails | undefined> {
-	if (!shouldSyncForApplyPatch(details)) {
-		return undefined;
+function isCodexApplyPatchResultDetails(value: unknown): value is CodexApplyPatchResultDetails {
+	if (!isRecord(value)) {
+		return false;
 	}
-	const localPath = details.moveTo ?? details.path;
-	if (!isPathWithinCwd(cwd, localPath)) {
-		return undefined;
+	if (!isStringArray(value.added) || !isStringArray(value.modified)) {
+		return false;
 	}
+	if (value.deleted !== undefined && !isStringArray(value.deleted)) {
+		return false;
+	}
+	return true;
+}
 
+interface PreparedAutoSyncTarget {
+	target: SftpTargetConfig;
+	requireExisting: boolean;
+	otpProvider?: OtpProvider;
+}
+
+function isSftpSyncDetails(value: unknown): value is SftpSyncDetails {
+	if (!isRecord(value)) {
+		return false;
+	}
+	return Array.isArray(value.targets) && typeof value.uploaded === "number";
+}
+
+async function prepareAutoSyncTarget(cwd: string, context?: ExtensionContext): Promise<PreparedAutoSyncTarget | SftpSyncDetails | undefined> {
 	let targets: SftpTargetConfig[];
 	try {
 		targets = await loadSftpTargets(cwd);
@@ -599,6 +613,7 @@ async function maybeSyncApplyPatchResult(
 			errors: [`selected target not found: ${selectedTargetId}`],
 		};
 	}
+
 	const selectedTarget = preferredTarget ?? targets[targets.length - 1]!;
 	const otpProvider: OtpProvider | undefined =
 		targetRequiresInteractiveAuth(selectedTarget) && context?.hasUI
@@ -607,14 +622,100 @@ async function maybeSyncApplyPatchResult(
 				return await promptForOtp(context, labels);
 			}
 			: undefined;
-	const requireExisting = targetRequiresInteractiveAuth(selectedTarget) && !otpProvider;
+
+	return {
+		target: selectedTarget,
+		requireExisting: targetRequiresInteractiveAuth(selectedTarget) && !otpProvider,
+		otpProvider,
+	};
+}
+
+function shouldSyncForApplyPatch(details: ApplyPatchResultDetails): boolean {
+	if (details.operation === "add") {
+		return true;
+	}
+	if (details.moveTo) {
+		return true;
+	}
+	return typeof details.appliedHunks === "number" && details.appliedHunks > 0;
+}
+
+async function maybeSyncApplyPatchResult(
+	cwd: string,
+	details: ApplyPatchResultDetails,
+	context?: ExtensionContext,
+): Promise<SftpSyncDetails | undefined> {
+	if (!shouldSyncForApplyPatch(details)) {
+		return undefined;
+	}
+	const localPath = details.moveTo ?? details.path;
+	if (!isPathWithinCwd(cwd, localPath)) {
+		return undefined;
+	}
+
+	const prepared = await prepareAutoSyncTarget(cwd, context);
+	if (!prepared) {
+		return undefined;
+	}
+	if (isSftpSyncDetails(prepared)) {
+		return prepared;
+	}
+
 	return syncSftpFile({
 		cwd,
 		localPath,
-		targets: [selectedTarget],
-		requireExisting,
-		otpProvider,
+		targets: [prepared.target],
+		requireExisting: prepared.requireExisting,
+		otpProvider: prepared.otpProvider,
 	});
+}
+
+async function maybeSyncCodexApplyPatchResult(
+	cwd: string,
+	details: CodexApplyPatchResultDetails,
+	context?: ExtensionContext,
+): Promise<SftpSyncDetails | undefined> {
+	const dedupedPaths = Array.from(new Set([...details.added, ...details.modified].map((entry) => entry.trim())))
+		.filter((entry) => entry.length > 0)
+		.filter((entry) => isPathWithinCwd(cwd, entry));
+
+	if (dedupedPaths.length === 0) {
+		return undefined;
+	}
+
+	const prepared = await prepareAutoSyncTarget(cwd, context);
+	if (!prepared) {
+		return undefined;
+	}
+	if (isSftpSyncDetails(prepared)) {
+		return prepared;
+	}
+
+	let uploaded = 0;
+	const errors: string[] = [];
+	let targets: string[] = [];
+
+	for (const localPath of dedupedPaths) {
+		const result = await syncSftpFile({
+			cwd,
+			localPath,
+			targets: [prepared.target],
+			requireExisting: prepared.requireExisting,
+			otpProvider: prepared.otpProvider,
+		});
+
+		uploaded += result.uploaded;
+		targets = result.targets;
+		if (result.errors && result.errors.length > 0) {
+			errors.push(`${localPath}: ${result.errors.join("; ")}`);
+		}
+	}
+
+	return {
+		targets,
+		uploaded,
+		errors: errors.length > 0 ? errors : undefined,
+	};
 }
 
 async function uploadSftpPath(options: {
@@ -891,15 +992,17 @@ async function promptForTargetSelection(
 
 export function registerSftpCommands(pi: ExtensionAPI): void {
 	pi.on("tool_result", async (event, ctx) => {
-		if (event.toolName !== "ApplyPatch" || event.isError) {
+		if (event.isError) {
 			return;
 		}
 
-		if (!isApplyPatchResultDetails(event.details)) {
-			return;
+		let sftp: SftpSyncDetails | undefined;
+		if (event.toolName === "ApplyPatch" && isApplyPatchResultDetails(event.details)) {
+			sftp = await maybeSyncApplyPatchResult(ctx.cwd, event.details, ctx);
+		} else if (event.toolName === "CodexApplyPatch" && isCodexApplyPatchResultDetails(event.details)) {
+			sftp = await maybeSyncCodexApplyPatchResult(ctx.cwd, event.details, ctx);
 		}
 
-		const sftp = await maybeSyncApplyPatchResult(ctx.cwd, event.details, ctx);
 		if (!sftp) {
 			return;
 		}
