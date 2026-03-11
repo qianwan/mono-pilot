@@ -3,9 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
-import { Log } from "./log.js";
-import { Filesystem } from "./filesystem.js";
-import { LspState } from "./state.js";
+import { Filesystem, Log, LspState } from "./runtime.js";
 
 export namespace LSPServer {
   const log = Log.create({ service: "lsp.server" });
@@ -64,33 +62,19 @@ export namespace LSPServer {
     });
   }
 
-  async function* filesUp(opts: { targets: string[]; start: string; stop: string }): AsyncGenerator<string> {
-    let current = opts.start;
-    while (true) {
-      for (const target of opts.targets) {
-        const p = path.join(current, target);
-        if (await Filesystem.exists(p)) yield p;
-      }
-      if (current === opts.stop || !current.startsWith(opts.stop)) break;
-      const parent = path.dirname(current);
-      if (parent === current) break;
-      current = parent;
-    }
-  }
-
   const NearestRoot = (includePatterns: string[], excludePatterns?: string[]): RootFunction => {
     return async (file) => {
       const dir = path.dirname(file);
       const stop = LspState.directory;
 
       if (excludePatterns) {
-        const gen = filesUp({ targets: excludePatterns, start: dir, stop });
+        const gen = Filesystem.up({ targets: excludePatterns, start: dir, stop });
         const first = await gen.next();
         await gen.return(undefined);
         if (first.value) return undefined;
       }
 
-      const gen = filesUp({ targets: includePatterns, start: dir, stop });
+      const gen = Filesystem.up({ targets: includePatterns, start: dir, stop });
       const first = await gen.next();
       await gen.return(undefined);
       if (!first.value) return stop;

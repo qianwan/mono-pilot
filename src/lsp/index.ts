@@ -1,9 +1,7 @@
-import { Log } from "./log.js";
+import { Log, LspState } from "./runtime.js";
 import { LSPClient } from "./client.js";
 import { LSPServer } from "./server.js";
-import { LspState } from "./state.js";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 export namespace LSP {
   const log = Log.create({ service: "lsp" });
