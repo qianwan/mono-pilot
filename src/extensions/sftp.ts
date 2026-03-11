@@ -18,6 +18,18 @@ interface SftpTargetConfig {
 	remotePath: string;
 	uploadOnSave?: boolean;
 	interactiveAuth?: boolean;
+	hop?: SftpHopConfig;
+}
+
+interface SftpHopConfig {
+	host: string;
+	port?: number;
+	username: string;
+	password?: string;
+	privateKeyPath?: string;
+	privateKey?: string;
+	passphrase?: string;
+	interactiveAuth?: boolean;
 }
 
 interface SftpSyncDetails {
@@ -49,6 +61,22 @@ interface CachedSftpConnection {
 	client: SftpClientInstance;
 	ready: boolean;
 	connecting?: Promise<void>;
+	cleanup?: () => void;
+}
+
+interface SshTunnelClient {
+	on(eventType: string, listener: (...args: unknown[]) => void): void;
+	once(eventType: string, listener: (...args: unknown[]) => void): void;
+	removeListener(eventType: string, listener: (...args: unknown[]) => void): void;
+	connect(config: Record<string, unknown>): void;
+	forwardOut(
+		srcIP: string,
+		srcPort: number,
+		dstIP: string,
+		dstPort: number,
+		cb: (err: Error | undefined, stream: unknown) => void,
+	): void;
+	end(): void;
 }
 
 type OtpProvider = () => Promise<string | null>;
@@ -90,6 +118,10 @@ function normalizeTarget(raw: Record<string, unknown>): SftpTargetConfig | null 
 		return null;
 	}
 	const privateKeyPath = readString(raw.privateKeyPath);
+	const hop = normalizeHop(raw.hop);
+	if (hop === null) {
+		return null;
+	}
 	return {
 		name: readString(raw.name),
 		protocol,
@@ -102,6 +134,34 @@ function normalizeTarget(raw: Record<string, unknown>): SftpTargetConfig | null 
 		passphrase: readString(raw.passphrase),
 		remotePath,
 		uploadOnSave: readBoolean(raw.uploadOnSave),
+		interactiveAuth: readBoolean(raw.interactiveAuth),
+		hop,
+	};
+}
+
+function normalizeHop(raw: unknown): SftpHopConfig | null | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	if (!isRecord(raw)) {
+		return null;
+	}
+
+	const host = readString(raw.host);
+	const username = readString(raw.username);
+	if (!host || !username) {
+		return null;
+	}
+
+	const privateKeyPath = readString(raw.privateKeyPath);
+	return {
+		host,
+		port: readNumber(raw.port),
+		username,
+		password: readString(raw.password),
+		privateKeyPath: privateKeyPath ? expandHome(privateKeyPath) : undefined,
+		privateKey: readString(raw.privateKey),
+		passphrase: readString(raw.passphrase),
 		interactiveAuth: readBoolean(raw.interactiveAuth),
 	};
 }
@@ -136,7 +196,15 @@ function describeTarget(target: SftpTargetConfig): string {
 }
 
 function getTargetCacheKey(target: SftpTargetConfig): string {
-	return target.name ?? target.host;
+	const base = target.name ?? target.host;
+	if (!target.hop) {
+		return base;
+	}
+	return `${base} via ${target.hop.username}@${target.hop.host}:${target.hop.port ?? 22}`;
+}
+
+function targetRequiresInteractiveAuth(target: SftpTargetConfig): boolean {
+	return target.interactiveAuth === true || target.hop?.interactiveAuth === true;
 }
 
 function shouldRetryInteractiveAuth(errors?: string[]): boolean {
@@ -156,7 +224,16 @@ function hasSftpConnection(target: SftpTargetConfig): boolean {
 	return Boolean(entry?.ready);
 }
 
-function buildConnectConfig(target: SftpTargetConfig): Record<string, unknown> {
+function buildConnectConfig(target: {
+	host: string;
+	port?: number;
+	username: string;
+	password?: string;
+	privateKeyPath?: string;
+	privateKey?: string;
+	passphrase?: string;
+	interactiveAuth?: boolean;
+}): Record<string, unknown> {
 	const config: Record<string, unknown> = {
 		host: target.host,
 		port: target.port ?? 22,
@@ -180,22 +257,20 @@ function buildConnectConfig(target: SftpTargetConfig): Record<string, unknown> {
 	return config;
 }
 
-function attachOtpHandler(client: SftpClientInstance, otp: string): void {
-	client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
-		const answers = (Array.isArray(prompts) ? prompts : []).map(() => otp);
-		if (typeof finish === "function") {
-			finish(answers);
-		}
-	});
-}
-
-function registerConnectionLifecycle(key: string, client: SftpClientInstance): void {
+function registerConnectionLifecycle(key: string, entry: CachedSftpConnection): void {
 	const drop = () => {
-		connectionCache.delete(key);
+		if (entry.cleanup) {
+			entry.cleanup();
+			entry.cleanup = undefined;
+		}
+		const current = connectionCache.get(key);
+		if (current === entry) {
+			connectionCache.delete(key);
+		}
 	};
-	client.on("close", drop);
-	client.on("end", drop);
-	client.on("error", drop);
+	entry.client.on("close", drop);
+	entry.client.on("end", drop);
+	entry.client.on("error", drop);
 }
 
 async function createSftpClient(): Promise<SftpClientInstance> {
@@ -219,6 +294,58 @@ async function createSftpClient(): Promise<SftpClientInstance> {
 	});
 }
 
+async function createSshTunnelClient(): Promise<SshTunnelClient> {
+	const ssh2Module = (await import("ssh2")) as {
+		Client: new () => SshTunnelClient;
+	};
+	return new ssh2Module.Client();
+}
+
+async function createForwardStreamViaHop(options: {
+	hop: SftpHopConfig;
+	targetHost: string;
+	targetPort: number;
+	attachKeyboardInteractive?: (client: { on(eventType: string, listener: (...args: unknown[]) => void): void }) => void;
+}): Promise<{ client: SshTunnelClient; stream: unknown }> {
+	const hopClient = await createSshTunnelClient();
+	if (options.hop.interactiveAuth && options.attachKeyboardInteractive) {
+		options.attachKeyboardInteractive(hopClient);
+	}
+
+	await new Promise<void>((resolveReady, rejectReady) => {
+		const onReady = () => {
+			hopClient.removeListener("error", onError);
+			resolveReady();
+		};
+		const onError = (error: unknown) => {
+			hopClient.removeListener("ready", onReady);
+			rejectReady(error instanceof Error ? error : new Error(String(error)));
+		};
+		hopClient.once("ready", onReady);
+		hopClient.once("error", onError);
+		hopClient.connect(buildConnectConfig(options.hop));
+	});
+
+	const stream = await new Promise<unknown>((resolveStream, rejectStream) => {
+		hopClient.forwardOut("127.0.0.1", 0, options.targetHost, options.targetPort, (err, forwarded) => {
+			if (err) {
+				rejectStream(err);
+				return;
+			}
+			resolveStream(forwarded);
+		});
+	}).catch((error) => {
+		try {
+			hopClient.end();
+		} catch {
+			// Best effort cleanup.
+		}
+		throw error;
+	});
+
+	return { client: hopClient, stream };
+}
+
 async function getOrCreateConnection(options: {
 	target: SftpTargetConfig;
 	otp?: string | null;
@@ -237,7 +364,7 @@ async function getOrCreateConnection(options: {
 		const client = await createSftpClient();
 		const entry: CachedSftpConnection = { client, ready: false };
 		connectionCache.set(key, entry);
-		registerConnectionLifecycle(key, client);
+		registerConnectionLifecycle(key, entry);
 	}
 	const entry = connectionCache.get(key);
 	if (!entry) {
@@ -245,7 +372,12 @@ async function getOrCreateConnection(options: {
 	}
 	if (!entry.connecting) {
 		entry.connecting = (async () => {
-			if (options.target.interactiveAuth && (options.otp || options.otpProvider)) {
+			const shouldHandleOtp = targetRequiresInteractiveAuth(options.target) && (options.otp || options.otpProvider);
+			let attachKeyboardInteractive:
+				| ((client: { on(eventType: string, listener: (...args: unknown[]) => void): void }) => void)
+				| undefined;
+
+			if (shouldHandleOtp) {
 				let resolvedOtp: string | null | undefined = options.otp ?? undefined;
 				let otpPromise: Promise<string | null> | null = null;
 				const resolveOtp = async () => {
@@ -262,19 +394,53 @@ async function getOrCreateConnection(options: {
 					resolvedOtp = await otpPromise;
 					return resolvedOtp;
 				};
-				entry.client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
-					void (async () => {
-						const otp = await resolveOtp();
-						const answers = (Array.isArray(prompts) ? prompts : []).map(() => otp ?? "");
-						if (typeof finish === "function") {
-							finish(answers);
-						}
-					})();
-				});
+				attachKeyboardInteractive = (client) => {
+					client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+						void (async () => {
+							const otp = await resolveOtp();
+							const answers = (Array.isArray(prompts) ? prompts : []).map(() => otp ?? "");
+							if (typeof finish === "function") {
+								finish(answers);
+							}
+						})();
+					});
+				};
 			}
-			await entry.client.connect(buildConnectConfig(options.target));
+
+			if (options.target.hop) {
+				const tunnel = await createForwardStreamViaHop({
+					hop: options.target.hop,
+					targetHost: options.target.host,
+					targetPort: options.target.port ?? 22,
+					attachKeyboardInteractive,
+				});
+				entry.cleanup = () => {
+					try {
+						tunnel.client.end();
+					} catch {
+						// Best effort tunnel cleanup.
+					}
+				};
+				if (options.target.interactiveAuth && attachKeyboardInteractive) {
+					attachKeyboardInteractive(entry.client);
+				}
+				await entry.client.connect({
+					...buildConnectConfig(options.target),
+					sock: tunnel.stream,
+				});
+			} else {
+				if (options.target.interactiveAuth && attachKeyboardInteractive) {
+					attachKeyboardInteractive(entry.client);
+				}
+				await entry.client.connect(buildConnectConfig(options.target));
+			}
+
 			entry.ready = true;
 		})().catch((error) => {
+			if (entry.cleanup) {
+				entry.cleanup();
+				entry.cleanup = undefined;
+			}
 			connectionCache.delete(key);
 			throw error;
 		});
@@ -327,7 +493,7 @@ async function syncSftpFile(options: {
 
 	for (const target of targets) {
 		const label = describeTarget(target);
-		if (target.interactiveAuth) {
+		if (targetRequiresInteractiveAuth(target)) {
 			if (options.requireExisting && !hasSftpConnection(target)) {
 				errors.push(`${label}: no active SFTP session`);
 				continue;
@@ -435,13 +601,13 @@ async function maybeSyncApplyPatchResult(
 	}
 	const selectedTarget = preferredTarget ?? targets[targets.length - 1]!;
 	const otpProvider: OtpProvider | undefined =
-		selectedTarget.interactiveAuth && context?.hasUI
+		targetRequiresInteractiveAuth(selectedTarget) && context?.hasUI
 			? async () => {
 				const labels = [selectedTarget.name ?? selectedTarget.host];
 				return await promptForOtp(context, labels);
 			}
 			: undefined;
-	const requireExisting = selectedTarget.interactiveAuth && !otpProvider;
+	const requireExisting = targetRequiresInteractiveAuth(selectedTarget) && !otpProvider;
 	return syncSftpFile({
 		cwd,
 		localPath,
@@ -476,7 +642,7 @@ async function uploadSftpPath(options: {
 	const isDirectory = stats.isDirectory();
 	for (const target of targets) {
 		const label = describeTarget(target);
-		if (target.interactiveAuth) {
+		if (targetRequiresInteractiveAuth(target)) {
 			if (options.requireExisting && !hasSftpConnection(target)) {
 				errors.push(`${label}: no active SFTP session`);
 				continue;
@@ -530,7 +696,7 @@ async function downloadSftpPath(options: {
 	const localAbsolute = resolveLocalPath(options.cwd, options.localPath);
 	for (const target of targets) {
 		const label = describeTarget(target);
-		if (target.interactiveAuth) {
+		if (targetRequiresInteractiveAuth(target)) {
 			if (options.requireExisting && !hasSftpConnection(target)) {
 				errors.push(`${label}: no active SFTP session`);
 				continue;
@@ -820,7 +986,7 @@ export function registerSftpCommands(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const interactiveTargets = selectedTargets.filter((target) => target.interactiveAuth);
+			const interactiveTargets = selectedTargets.filter((target) => targetRequiresInteractiveAuth(target));
 			let otp: string | null | undefined = undefined;
 			const otpProvider: OtpProvider | undefined =
 				interactiveTargets.length > 0 && ctx.hasUI
