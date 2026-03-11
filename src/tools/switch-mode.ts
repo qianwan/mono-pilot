@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
+import { isAbsolute, resolve } from "node:path";
+import process from "node:process";
 import {
 	createModeStateData,
 	deriveInitialModeState,
@@ -73,6 +75,12 @@ const switchModeSchema = Type.Object({
 			description: "Optional explanation for why the mode switch is requested. This helps the user understand why you're switching modes.",
 		}),
 	),
+	plan_file: Type.Optional(
+		Type.String({
+			description:
+				"Optional plan file path for Plan mode. If relative, it is resolved against the current workspace.",
+		}),
+	),
 });
 
 type SwitchModeInput = Static<typeof switchModeSchema>;
@@ -80,6 +88,20 @@ type SwitchModeInput = Static<typeof switchModeSchema>;
 interface SwitchModeDetails {
 	active_mode: "plan" | "ask" | "agent";
 	explanation?: string;
+	plan_file?: string;
+}
+
+function normalizePlanFilePath(value: string | undefined): string | undefined {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+
+	const trimmed = value.trim();
+	if (trimmed.length === 0) {
+		return undefined;
+	}
+
+	return isAbsolute(trimmed) ? trimmed : resolve(process.cwd(), trimmed);
 }
 
 interface FooterModelState {
@@ -329,8 +351,13 @@ function persistModeState(pi: ExtensionAPI): void {
 	pi.appendEntry(MODE_STATE_ENTRY_TYPE, createModeStateData(modeRuntimeStore.getSnapshot()));
 }
 
-function setMode(pi: ExtensionAPI, nextMode: ModeId, ctx?: ExtensionContext): { changed: boolean } {
-	const { changed } = modeRuntimeStore.setMode(nextMode);
+function setMode(
+	pi: ExtensionAPI,
+	nextMode: ModeId,
+	ctx?: ExtensionContext,
+	options?: { planFilePath?: string },
+): { changed: boolean } {
+	const { changed } = modeRuntimeStore.setMode(nextMode, options);
 	if (changed) {
 		persistModeState(pi);
 	}
@@ -394,18 +421,34 @@ export default function switchModeExtension(pi: ExtensionAPI) {
 		description: DESCRIPTION,
 		parameters: switchModeSchema,
 		async execute(_toolCallId, params: SwitchModeInput, _signal, _onUpdate, ctx) {
-			const { changed } = setMode(pi, "plan", ctx);
+			const before = modeRuntimeStore.getSnapshot();
+			const planFilePath = normalizePlanFilePath(params.plan_file);
+			const { changed } = setMode(pi, "plan", ctx, { planFilePath });
+			const after = modeRuntimeStore.getSnapshot();
 
 			const explanation = params.explanation?.trim();
 			const details: SwitchModeDetails = {
 				active_mode: "plan",
 				explanation: explanation || undefined,
+				plan_file: after.planFilePath,
 			};
 
 			const explanationSuffix = explanation ? ` Reason: ${explanation}` : "";
-			const prefix = changed ? "Switched to Plan mode." : "Plan mode is already active.";
+			const modeChanged = before.activeMode !== after.activeMode;
+			const planFileChanged = before.planFilePath !== after.planFilePath;
+			let prefix: string;
+			if (modeChanged) {
+				prefix = "Switched to Plan mode.";
+			} else if (planFileChanged) {
+				prefix = "Plan mode is already active. Updated plan file.";
+			} else {
+				prefix = changed ? "Switched to Plan mode." : "Plan mode is already active.";
+			}
+
+			const planFileSuffix = after.planFilePath ? ` Plan file: ${after.planFilePath}` : "";
+
 			return {
-				content: [{ type: "text", text: `${prefix}${explanationSuffix}` }],
+				content: [{ type: "text", text: `${prefix}${planFileSuffix}${explanationSuffix}` }],
 				details,
 			};
 		},

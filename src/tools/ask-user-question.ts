@@ -275,12 +275,12 @@ function buildSuccessText(answers: AskAnswer[], questions: AskQuestionInput["que
 	return lines.join("\n");
 }
 
-export default function askQuestionExtension(pi: ExtensionAPI) {
+export default function askUserQuestionExtension(pi: ExtensionAPI) {
 	// System prompt injection is handled centrally by system-prompt extension.
 
 	pi.registerTool({
-		name: "AskQuestion",
-		label: "AskQuestion",
+		name: "AskUserQuestion",
+		label: "AskUserQuestion",
 		description: DESCRIPTION,
 		parameters: askQuestionSchema,
 		async execute(_toolCallId, params: AskQuestionInput, signal, _onUpdate, ctx) {

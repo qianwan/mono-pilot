@@ -11,13 +11,14 @@ import semanticSearchExtension from "../tools/semantic-search.js";
 import webSearchExtension from "../tools/web-search.js";
 import webFetchExtension from "../tools/web-fetch.js";
 import generateImageExtension from "../tools/generate-image.js";
-import askQuestionExtension from "../tools/ask-question.js";
+import askUserQuestionExtension from "../tools/ask-user-question.js";
 import subagentExtension from "../tools/subagent.js";
 import listMcpResourcesExtension from "../tools/list-mcp-resources.js";
 import fetchMcpResourceExtension from "../tools/fetch-mcp-resource.js";
 import listMcpToolsExtension from "../tools/list-mcp-tools.js";
 import callMcpToolExtension from "../tools/call-mcp-tool.js";
 import switchModeExtension from "../tools/switch-mode.js";
+import exitPlanModeExtension from "../tools/exit-plan-mode.js";
 // import applyPatchExtension from "../tools/apply-patch.js";
 import codexApplyPatchExtension from "../tools/codex-apply-patch.js";
 import userMessageExtension from "./user-message.js";
@@ -52,13 +53,14 @@ const toolExtensions: ExtensionFactory[] = [
 	webSearchExtension,
 	webFetchExtension,
 	generateImageExtension,
-	askQuestionExtension,
+	askUserQuestionExtension,
 	subagentExtension,
 	listMcpResourcesExtension,
 	fetchMcpResourceExtension,
 	listMcpToolsExtension,
 	callMcpToolExtension,
 	switchModeExtension,
+	exitPlanModeExtension,
 	// applyPatchExtension,
 	codexApplyPatchExtension,
 	userMessageExtension,

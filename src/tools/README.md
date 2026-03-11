@@ -57,7 +57,9 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
 - `call-mcp-tool.ts` (`CallMcpTool`)
   - Call a remote MCP tool by server + tool name + JSON arguments.
 - `switch-mode.ts` (`SwitchMode`)
-  - Switch runtime interaction mode (tool supports `plan`; `/plan` toggles Plan/Agent).
+  - Switch runtime interaction mode (tool supports `plan`; optional `plan_file` binds a plan document path used by Plan-mode reminders).
+- `exit-plan-mode.ts` / `exit-plan-mode-description.md` (`ExitPlanMode`)
+  - Exit Plan mode and switch runtime mode back to Agent.
 - `apply-patch.ts` / `apply-patch-description.md` (`ApplyPatch`)
   - Apply single-file patches in `*** Begin Patch` format (SFTP auto-upload is attached by the SFTP extension hook).
 - `codex-apply-patch.ts` / `codex-apply-patch-description.md` (`CodexApplyPatch`)

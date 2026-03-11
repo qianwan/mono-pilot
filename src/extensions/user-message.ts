@@ -10,6 +10,7 @@ import {
 	MODE_STATE_ENTRY_TYPE,
 	ASK_MODE_SWITCH_REMINDER,
 	PLAN_MODE_STILL_ACTIVE_REMINDER,
+	type ModeStateSnapshot,
 } from "./mode-runtime.js";
 import { getBriefReflectionReminder } from "../brief/reflection.js";
 import {
@@ -83,6 +84,44 @@ function normalizeServerLabel(value: string): string | undefined {
 	const normalized = value.replace(/\s+/g, " ").trim();
 	if (normalized.length === 0) return undefined;
 	return normalized;
+}
+
+function escapeXml(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/\"/g, "&quot;")
+		.replace(/'/g, "&apos;");
+}
+
+function buildPlanFileReminder(planFilePath: string): string {
+	const escapedPath = escapeXml(planFilePath);
+	return [
+		"<system_reminder>",
+		`Plan file path: ${escapedPath}`,
+		"While Plan mode is active, create or update this plan file as needed during collaboration with the user.",
+		"You may modify this plan file in Plan mode; do not modify other files unless the mode changes.",
+		"</system_reminder>",
+	].join("\n");
+}
+
+function appendPlanFileReminder(reminder: string | undefined, snapshot: ModeStateSnapshot): string | undefined {
+	if (snapshot.activeMode !== "plan") {
+		return reminder;
+	}
+
+	const planFilePath = snapshot.planFilePath?.trim();
+	if (!planFilePath) {
+		return reminder;
+	}
+
+	const planFileReminder = buildPlanFileReminder(planFilePath);
+	if (!reminder) {
+		return planFileReminder;
+	}
+
+	return `${reminder}\n\n${planFileReminder}`;
 }
 
 async function fetchServerInstructions(
@@ -317,6 +356,7 @@ export default function runtimeEnvelopeExtension(pi: ExtensionAPI) {
 			planEntryReminder,
 			askEntryReminder,
 		);
+		const reminderWithPlanFile = appendPlanFileReminder(reminder, snapshot);
 		if (changed) {
 			pi.appendEntry(MODE_STATE_ENTRY_TYPE, createModeStateData(snapshot));
 		}
@@ -325,7 +365,7 @@ export default function runtimeEnvelopeExtension(pi: ExtensionAPI) {
 
 		return {
 			action: "transform",
-			text: buildRuntimeEnvelope(event.text, reminder, mcpInstructions, rulesEnvelope, briefReminder),
+			text: buildRuntimeEnvelope(event.text, reminderWithPlanFile, mcpInstructions, rulesEnvelope, briefReminder),
 			images: event.images,
 		};
 	});

@@ -6,13 +6,23 @@ export type PendingReminder = "plan-entry" | "agent-entry" | "ask-entry";
 export interface ModeStateSnapshot {
 	activeMode: ModeId;
 	pendingReminder?: PendingReminder;
+	planFilePath?: string;
 }
 
 export interface ModeStateData {
 	activeMode?: ModeId;
 	pendingReminder?: PendingReminder;
+	planFilePath?: string;
 	// Backward compatibility with earlier local state shape
 	planModeActive?: boolean;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export const PLAN_MODE_STILL_ACTIVE_REMINDER = `<system_reminder>
@@ -42,6 +52,7 @@ export function parseModeStateEntry(entry: unknown): ModeStateSnapshot | undefin
 	const state = data as ModeStateData;
 
 	if (state.activeMode === "plan" || state.activeMode === "agent" || state.activeMode === "ask") {
+		const planFilePath = normalizeOptionalString(state.planFilePath);
 		return {
 			activeMode: state.activeMode,
 			pendingReminder:
@@ -50,13 +61,16 @@ export function parseModeStateEntry(entry: unknown): ModeStateSnapshot | undefin
 				state.pendingReminder === "ask-entry"
 					? state.pendingReminder
 					: undefined,
+			planFilePath,
 		};
 	}
 
 	if (typeof state.planModeActive === "boolean") {
+		const planFilePath = normalizeOptionalString(state.planFilePath);
 		return {
 			activeMode: state.planModeActive ? "plan" : "agent",
 			pendingReminder: undefined,
+			planFilePath,
 		};
 	}
 
@@ -74,6 +88,7 @@ export function createModeStateData(snapshot: ModeStateSnapshot): ModeStateData 
 	return {
 		activeMode: snapshot.activeMode,
 		pendingReminder: snapshot.pendingReminder,
+		planFilePath: snapshot.planFilePath,
 		planModeActive: snapshot.activeMode === "plan",
 	};
 }
@@ -122,14 +137,24 @@ class ModeRuntimeStore {
 		return { ...this.state };
 	}
 
-	setMode(nextMode: ModeId): { changed: boolean; snapshot: ModeStateSnapshot } {
+	setMode(nextMode: ModeId, options?: { planFilePath?: string }): { changed: boolean; snapshot: ModeStateSnapshot } {
+		const nextPlanFilePath = normalizeOptionalString(options?.planFilePath);
+
 		if (this.state.activeMode === nextMode) {
+			if (nextMode === "plan" && nextPlanFilePath !== undefined && nextPlanFilePath !== this.state.planFilePath) {
+				this.state.planFilePath = nextPlanFilePath;
+				this.state.pendingReminder = "plan-entry";
+				return { changed: true, snapshot: this.getSnapshot() };
+			}
 			return { changed: false, snapshot: this.getSnapshot() };
 		}
 
 		this.state.activeMode = nextMode;
 		switch (nextMode) {
 			case "plan":
+				if (nextPlanFilePath !== undefined) {
+					this.state.planFilePath = nextPlanFilePath;
+				}
 				this.state.pendingReminder = "plan-entry";
 				break;
 			case "ask":
