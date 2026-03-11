@@ -104,6 +104,7 @@ export async function initSubsystems(
 		);
 		disposers.push(
 			onClusterV2LeaderRecovered(() => {
+				refreshMemoryEmbeddingProviderFromActiveClusterV2();
 				void publishClusterV2LeaderRecoveredEvent(ctx);
 			}),
 		);
@@ -265,6 +266,14 @@ async function publishClusterV2LeaderRecoveredEvent(ctx: ExtensionContext): Prom
 			ctx,
 		});
 	}
+}
+
+function refreshMemoryEmbeddingProviderFromActiveClusterV2(): void {
+	const active = getActiveClusterV2Service();
+	if (!active) {
+		return;
+	}
+	setMemoryWorkersEmbeddingProvider(active.embedding);
 }
 
 function publishDiscordChannelBatchSystemEvent(

@@ -21,6 +21,8 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
   - Find paths by glob pattern.
 - `rg.ts` (`rg`)
   - Search file content with ripgrep.
+- `ast-grep.ts` (`AstGrep`)
+  - Search code by AST structure using ast-grep (`run` and `scan`, read-only).
 - `read-file.ts` (`ReadFile`)
   - Read file content with truncation and pagination behavior.
 - `delete.ts` (`Delete`)
@@ -58,6 +60,8 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
   - Switch runtime interaction mode (tool supports `plan`; `/plan` toggles Plan/Agent).
 - `apply-patch.ts` / `apply-patch-description.md` (`ApplyPatch`)
   - Apply single-file patches in `*** Begin Patch` format (SFTP auto-upload is attached by the SFTP extension hook).
+- `codex-apply-patch.ts` / `codex-apply-patch-description.md` (`CodexApplyPatch`)
+  - Apply codex-style multi-file patches (`Add/Delete/Update/Move`) with relative paths.
 
 ### Brief tools
 

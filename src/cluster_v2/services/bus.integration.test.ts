@@ -9,13 +9,14 @@ import {
 	type ClusterRequest,
 	type RpcConnection,
 } from "../rpc.js";
-import { connectBusClient, createBusService, type BusHandle } from "./bus.js";
+import { connectBusClient, createBusService, type BusHandle, type BusService } from "./bus.js";
 import type { MessagePushPayload, PresencePushPayload } from "../rpc.js";
 
 interface RpcServerHandle {
 	dir: string;
 	socketPath: string;
 	server: net.Server;
+	busService: BusService;
 }
 
 const activeServers: RpcServerHandle[] = [];
@@ -72,7 +73,7 @@ async function startBusServer(): Promise<RpcServerHandle> {
 		server.listen(socketPath, () => resolve());
 	});
 
-	const handle = { dir, socketPath, server };
+	const handle = { dir, socketPath, server, busService };
 	activeServers.push(handle);
 	return handle;
 }
@@ -162,5 +163,33 @@ describe("cluster_v2 bus integration", () => {
 
 		expect(bobMessages.some((msg) => msg.channel === "public")).toBe(true);
 		expect(aliceMessages.length).toBe(0);
+	});
+
+	it("keeps leader role when same agent re-registers as follower", async () => {
+		const server = await startBusServer();
+
+		const leaderBus = server.busService.createLeaderHandle("same-agent", "Leader");
+		activeBuses.push(leaderBus);
+
+		const duplicateClient = await connectClient(server.socketPath, "same-agent");
+		const duplicateBus = await connectBusClient(duplicateClient, "same-agent", "Follower", ["secret"]);
+		activeBuses.push(duplicateBus);
+
+		await sleep(30);
+
+		const firstRoster = await leaderBus.roster();
+		expect(firstRoster.agents).toHaveLength(1);
+		expect(firstRoster.agents[0].agentId).toBe("same-agent");
+		expect(firstRoster.agents[0].role).toBe("leader");
+		expect(firstRoster.agents[0].channels).toEqual(
+			expect.arrayContaining(["public", "private:same-agent", "secret"]),
+		);
+
+		duplicateClient.close();
+		await sleep(30);
+
+		const secondRoster = await leaderBus.roster();
+		expect(secondRoster.agents).toHaveLength(1);
+		expect(secondRoster.agents[0].role).toBe("leader");
 	});
 });

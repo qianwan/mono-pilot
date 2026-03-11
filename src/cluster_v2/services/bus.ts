@@ -9,6 +9,7 @@ import type {
 	SendParams,
 	SubscribeParams,
 } from "../rpc.js";
+import { createClusterLogContext, logClusterEvent } from "../observability.js";
 
 export interface BusHandle {
 	send(to: string, payload: unknown, channel?: string): Promise<{ seq: number }>;
@@ -48,6 +49,13 @@ interface ConnectedAgent {
 	push: PushFn;
 	channels: Set<string>;
 	connection?: RpcConnection;
+}
+
+interface RegisterAgentResult {
+	channels: string[];
+	previousRole: "leader" | "follower" | null;
+	nextRole: "leader" | "follower";
+	roleDowngradePrevented: boolean;
 }
 
 export interface BusService {
@@ -134,8 +142,29 @@ export function createBusService(): BusService {
 		channels?: string[],
 		displayName?: string,
 		connection?: RpcConnection,
-	): string[] => {
+	): RegisterAgentResult => {
 		const existing = agents.get(agentId);
+		const previousRole = existing?.role ?? null;
+		const roleDowngradePrevented = existing?.role === "leader" && role === "follower";
+
+		if (existing && roleDowngradePrevented) {
+			const allChannels = [...new Set([...existing.channels, ...getDefaultChannels(agentId), ...(channels ?? [])])];
+			agents.set(agentId, {
+				agentId,
+				displayName: existing.displayName ?? displayName,
+				role: existing.role,
+				push: existing.push,
+				channels: new Set(allChannels),
+				connection: existing.connection,
+			});
+			return {
+				channels: allChannels,
+				previousRole,
+				nextRole: existing.role,
+				roleDowngradePrevented,
+			};
+		}
+
 		if (existing) {
 			existing.push = () => {
 				// old connection is superseded by the new registration.
@@ -162,7 +191,12 @@ export function createBusService(): BusService {
 			} satisfies PresencePushPayload);
 		}
 
-		return allChannels;
+		return {
+			channels: allChannels,
+			previousRole,
+			nextRole: role,
+			roleDowngradePrevented,
+		};
 	};
 
 	const unregisterAgent = (agentId: string) => {
@@ -182,7 +216,7 @@ export function createBusService(): BusService {
 	const handlers: Record<string, RpcRequestHandler> = {
 		[BUS_METHOD_REGISTER]: async (request, connection) => {
 			const { agentId, channels, displayName } = parseRegisterParams(request.params);
-			const allChannels = registerAgent(
+			const registration = registerAgent(
 				agentId,
 				(method, payload) => connection.sendPush(method, payload),
 				"follower",
@@ -190,8 +224,29 @@ export function createBusService(): BusService {
 				displayName,
 				connection,
 			);
+			const fromSessionId = request.from?.sessionId;
+			logClusterEvent(
+				registration.roleDowngradePrevented ? "warn" : "info",
+				registration.roleDowngradePrevented
+					? "bus_register_role_downgrade_prevented"
+					: "bus_register",
+				createClusterLogContext({
+					agentId,
+					sessionId: fromSessionId,
+					role: "leader:bus",
+				}),
+				{
+					previousRole: registration.previousRole,
+					nextRole: registration.nextRole,
+					requestedRole: "follower",
+					fromPid: request.from?.pid ?? null,
+					fromSessionId: fromSessionId ?? null,
+					fromAgentId: request.from?.agentId ?? null,
+					channels: registration.channels,
+				},
+			);
 			connection.state.set(CONNECTION_AGENT_ID_KEY, agentId);
-			return { agentId, channels: allChannels };
+			return { agentId, channels: registration.channels };
 		},
 
 		[BUS_METHOD_SUBSCRIBE]: async (request, connection) => {

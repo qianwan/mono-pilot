@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
-import { appendFile, mkdir } from "node:fs/promises";
+import { closeSync, openSync } from "node:fs";
+import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { extractTwitterCollectorConfig, type TwitterCollectorConfig } from "../../../config/twitter.js";
 import { loadMonoPilotConfigObject } from "../../../config/mono-pilot.js";
@@ -20,6 +22,16 @@ interface BirdCommandResult {
 }
 
 type PersistedTwitterTweet = Record<string, unknown>;
+
+interface ArchiveTweetSnapshot {
+	hasTweetFullField: boolean;
+}
+
+interface ResolvedShortLinkMapping {
+	shortUrl: string;
+	resolvedUrl: string | null;
+	statusId: string | null;
+}
 
 interface PersistedTwitterBatch {
 	seq: number;
@@ -56,11 +68,111 @@ function readNestedString(record: Record<string, unknown>, path: string[]): stri
 	return readString(current);
 }
 
+function readNestedRecord(record: Record<string, unknown>, path: string[]): Record<string, unknown> | null {
+	let current: unknown = record;
+	for (const key of path) {
+		if (!isRecord(current) || !(key in current)) {
+			return null;
+		}
+		current = current[key];
+	}
+	return isRecord(current) ? current : null;
+}
+
+function readNestedArray(record: Record<string, unknown>, path: string[]): unknown[] | null {
+	let current: unknown = record;
+	for (const key of path) {
+		if (!isRecord(current) || !(key in current)) {
+			return null;
+		}
+		current = current[key];
+	}
+	return Array.isArray(current) ? current : null;
+}
+
+function firstNonEmptyString(candidates: Array<string | null | undefined>): string | null {
+	for (const candidate of candidates) {
+		if (typeof candidate === "string" && candidate.trim().length > 0) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
 function formatLocalDateStamp(date: Date): string {
 	const year = String(date.getFullYear());
 	const month = String(date.getMonth() + 1).padStart(2, "0");
 	const day = String(date.getDate()).padStart(2, "0");
 	return `${year}-${month}-${day}`;
+}
+
+function shiftDate(date: Date, dayOffset: number): Date {
+	const shifted = new Date(date);
+	shifted.setDate(shifted.getDate() + dayOffset);
+	return shifted;
+}
+
+function listRecentDateStamps(now: Date, dayCount: number): string[] {
+	const result: string[] = [];
+	for (let index = 0; index < dayCount; index += 1) {
+		result.push(formatLocalDateStamp(shiftDate(now, -index)));
+	}
+	return result;
+}
+
+function resolveDailyArchivePath(outputPath: string, dateStamp: string): string {
+	const parsed = parse(outputPath);
+	const dir = parsed.dir;
+	const baseName = parsed.name || parsed.base || "home";
+	const extension = parsed.ext || ".jsonl";
+	return join(dir, `${baseName}.${dateStamp}${extension}`);
+}
+
+function hasOwnField(record: Record<string, unknown>, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function hasTweetFullField(record: Record<string, unknown>): boolean {
+	return hasOwnField(record, "tweetFull");
+}
+
+function toLineRecord(line: string): Record<string, unknown> | null {
+	const trimmed = line.trim();
+	if (!trimmed) {
+		return null;
+	}
+
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		return isRecord(parsed) ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+interface AsyncDisposableTempDir {
+	path: string;
+	remove(): Promise<void>;
+	[Symbol.asyncDispose](): Promise<void>;
+}
+
+async function createAsyncDisposableTempDir(prefix: string): Promise<AsyncDisposableTempDir> {
+	const path = await mkdtemp(prefix);
+	let removed = false;
+
+	const remove = async () => {
+		if (removed) {
+			return;
+		}
+		removed = true;
+		await rm(path, { recursive: true, force: true });
+	};
+
+	return {
+		path,
+		remove,
+		[Symbol.asyncDispose]: remove,
+	};
 }
 
 class JsonlWriter {
@@ -185,6 +297,71 @@ function runBirdCommand(args: string[], timeoutMs: number): Promise<BirdCommandR
 	});
 }
 
+function runBirdCommandToFile(
+	args: string[],
+	timeoutMs: number,
+	outputPath: string,
+): Promise<Omit<BirdCommandResult, "stdout">> {
+	return new Promise((resolve, reject) => {
+		let stderr = "";
+		let timedOut = false;
+		let stdoutFd: number;
+
+		try {
+			stdoutFd = openSync(outputPath, "w");
+		} catch (error) {
+			reject(error);
+			return;
+		}
+
+		const child = spawn("bird", args, {
+			stdio: ["ignore", stdoutFd, "pipe"],
+		});
+
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGKILL");
+		}, timeoutMs);
+		timer.unref();
+
+		const closeStdoutFd = () => {
+			try {
+				closeSync(stdoutFd);
+			} catch {
+				// no-op; best-effort cleanup for temporary stdout fd
+			}
+		};
+
+		if (!child.stderr) {
+			clearTimeout(timer);
+			closeStdoutFd();
+			reject(new Error("bird stderr stream is unavailable"));
+			return;
+		}
+
+		child.stderr.on("data", (chunk) => {
+			stderr += String(chunk);
+		});
+
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			closeStdoutFd();
+			reject(error);
+		});
+
+		child.on("close", (code, signal) => {
+			clearTimeout(timer);
+			closeStdoutFd();
+			resolve({
+				code,
+				signal,
+				stderr,
+				timedOut,
+			});
+		});
+	});
+}
+
 function formatBirdFailure(prefix: string, result: BirdCommandResult): string {
 	const stderr = result.stderr.trim();
 	const stdout = result.stdout.trim();
@@ -214,12 +391,116 @@ function extractTweetId(record: Record<string, unknown>): string | null {
 	);
 }
 
-function isLongFormTweet(record: Record<string, unknown>): boolean {
-	return Boolean(
-		isRecord(record.article) ||
-		isRecord(record.note_tweet) ||
-		isRecord(record.note_tweet_results),
+function readStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+
+	const deduped = new Set<string>();
+	for (const item of value) {
+		const text = readString(item);
+		if (text) {
+			deduped.add(text);
+		}
+	}
+	return [...deduped];
+}
+
+function extractStatusIdFromUrl(url: string): string | null {
+	const normalized = url.trim();
+	if (!normalized) {
+		return null;
+	}
+
+	const matchedUserStatus = normalized.match(
+		/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[A-Za-z0-9_]+\/status\/(\d+)/i,
 	);
+	if (matchedUserStatus?.[1]) {
+		return matchedUserStatus[1];
+	}
+
+	const matchedWebStatus = normalized.match(
+		/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/i\/web\/status\/(\d+)/i,
+	);
+	if (matchedWebStatus?.[1]) {
+		return matchedWebStatus[1];
+	}
+
+	return null;
+}
+
+function extractTcoUrlsFromText(text: string | null): string[] {
+	if (!text) {
+		return [];
+	}
+
+	const deduped = new Set<string>();
+	const pattern = /https?:\/\/t\.co\/[A-Za-z0-9]+/gi;
+	pattern.lastIndex = 0;
+	let matched: RegExpExecArray | null;
+	while ((matched = pattern.exec(text)) !== null) {
+		const url = matched[0]?.trim();
+		if (url) {
+			deduped.add(url);
+		}
+	}
+
+	return [...deduped];
+}
+
+function extractBestFullText(record: Record<string, unknown>): string | null {
+	const raw = isRecord(record._raw) ? record._raw : null;
+	const rawRetweeted = raw
+		? readNestedRecord(raw, ["legacy", "retweeted_status_result", "result"])
+		: null;
+
+	return firstNonEmptyString([
+		readNestedString(record, ["note_tweet", "note_tweet_results", "result", "text"]),
+		readNestedString(record, ["note_tweet_results", "result", "text"]),
+		rawRetweeted ? readNestedString(rawRetweeted, ["note_tweet", "note_tweet_results", "result", "text"]) : null,
+		rawRetweeted ? readNestedString(rawRetweeted, ["legacy", "full_text"]) : null,
+		rawRetweeted ? readString(rawRetweeted.text) : null,
+		raw ? readNestedString(raw, ["note_tweet", "note_tweet_results", "result", "text"]) : null,
+		raw ? readNestedString(raw, ["note_tweet_results", "result", "text"]) : null,
+		readNestedString(record, ["legacy", "full_text"]),
+		readString(record.full_text),
+		raw ? readNestedString(raw, ["legacy", "full_text"]) : null,
+		readString(record.text),
+	]);
+}
+
+function extractBestText(record: Record<string, unknown>): string | null {
+	return firstNonEmptyString([
+		readString(record.text),
+		readString(record.full_text),
+		readNestedString(record, ["legacy", "full_text"]),
+		readNestedString(record, ["legacy", "text"]),
+	]);
+}
+
+function extractBestMedia(record: Record<string, unknown>): unknown[] | null {
+	if (Array.isArray(record.media)) {
+		return record.media.map((item) => (isRecord(item) ? { ...item } : item));
+	}
+
+	const raw = isRecord(record._raw) ? record._raw : null;
+	const rawRetweeted = raw
+		? readNestedRecord(raw, ["legacy", "retweeted_status_result", "result"])
+		: null;
+
+	const candidates: Array<unknown[] | null> = [
+		raw ? readNestedArray(raw, ["legacy", "extended_entities", "media"]) : null,
+		rawRetweeted ? readNestedArray(rawRetweeted, ["media"]) : null,
+		rawRetweeted ? readNestedArray(rawRetweeted, ["legacy", "extended_entities", "media"]) : null,
+	];
+
+	for (const candidate of candidates) {
+		if (Array.isArray(candidate) && candidate.length > 0) {
+			return candidate.map((item) => (isRecord(item) ? { ...item } : item));
+		}
+	}
+
+	return null;
 }
 
 function parseTweetsFromPayload(payload: unknown, limit: number): PersistedTwitterTweet[] {
@@ -282,7 +563,8 @@ class TwitterCollector implements TwitterCollectorHandle {
 	private seq = 0;
 	private inFlight = false;
 	private closed = false;
-	private readonly quotedTweetCache = new Map<string, Record<string, unknown>>();
+	private readonly archiveWindowDays = 2;
+	private readonly tweetFullCache = new Map<string, Record<string, unknown>>();
 
 	descriptor: ServiceDescriptor;
 
@@ -362,9 +644,34 @@ class TwitterCollector implements TwitterCollectorHandle {
 		const startedAt = Date.now();
 
 		try {
+			const archiveIndex = await this.loadRecentArchiveTweetIndex();
 			const payload = await this.fetchForYouTimeline();
-			const tweets = parseTweetsFromPayload(payload, this.config.pullCount);
-			await this.enrichQuotedLongFormTweets(tweets);
+			const fetchedTweets = parseTweetsFromPayload(payload, this.config.pullCount);
+			const { tweets, skippedArchivedCount, keptForBackfillCount } = this.filterTweetsByArchiveIndex(
+				fetchedTweets,
+				archiveIndex,
+			);
+			await this.enrichTweetsDepthOne(tweets);
+
+			if (tweets.length === 0) {
+				emitClusterV2TwitterPullBatch({
+					scope: this.lifecycleContext.scope ?? "default",
+					count: 0,
+					requestedCount: this.config.pullCount,
+					sequence: this.seq,
+				});
+				logClusterEvent("info", "twitter_collector_pull_dedup_skipped_all", this.lifecycleContext, {
+					trigger,
+					requestedCount: this.config.pullCount,
+					fetchedCount: fetchedTweets.length,
+					skippedArchivedCount,
+					keptForBackfillCount,
+					archiveWindowDays: this.archiveWindowDays,
+					durationMs: Date.now() - startedAt,
+				});
+				return;
+			}
+
 			const fetchedAt = new Date().toISOString();
 			const seq = ++this.seq;
 			const record: PersistedTwitterBatch = {
@@ -391,7 +698,11 @@ class TwitterCollector implements TwitterCollectorHandle {
 			logClusterEvent("info", "twitter_collector_pull_success", this.lifecycleContext, {
 				trigger,
 				requestedCount: this.config.pullCount,
+				fetchedCount: fetchedTweets.length,
 				receivedCount: tweets.length,
+				skippedArchivedCount,
+				keptForBackfillCount,
+				archiveWindowDays: this.archiveWindowDays,
 				durationMs: Date.now() - startedAt,
 			});
 		} catch (error) {
@@ -410,37 +721,291 @@ class TwitterCollector implements TwitterCollectorHandle {
 		}
 	}
 
-	private async enrichQuotedLongFormTweets(tweets: PersistedTwitterTweet[]): Promise<void> {
+	private filterTweetsByArchiveIndex(
+		tweets: PersistedTwitterTweet[],
+		archiveIndex: Map<string, ArchiveTweetSnapshot>,
+	): {
+		tweets: PersistedTwitterTweet[];
+		skippedArchivedCount: number;
+		keptForBackfillCount: number;
+	} {
+		const selected: PersistedTwitterTweet[] = [];
+		let skippedArchivedCount = 0;
+		let keptForBackfillCount = 0;
+
+		for (const tweet of tweets) {
+			if (!isRecord(tweet)) {
+				selected.push(tweet);
+				continue;
+			}
+
+			const tweetId = extractTweetId(tweet);
+			if (!tweetId) {
+				selected.push(tweet);
+				continue;
+			}
+
+			const snapshot = archiveIndex.get(tweetId);
+			if (!snapshot) {
+				selected.push(tweet);
+				continue;
+			}
+
+			if (snapshot.hasTweetFullField) {
+				skippedArchivedCount += 1;
+				continue;
+			}
+
+			keptForBackfillCount += 1;
+			selected.push(tweet);
+		}
+
+		return {
+			tweets: selected,
+			skippedArchivedCount,
+			keptForBackfillCount,
+		};
+	}
+
+	private async loadRecentArchiveTweetIndex(now = new Date()): Promise<Map<string, ArchiveTweetSnapshot>> {
+		const index = new Map<string, ArchiveTweetSnapshot>();
+		const dateStamps = listRecentDateStamps(now, this.archiveWindowDays);
+
+		for (const dateStamp of dateStamps) {
+			const archivePath = resolveDailyArchivePath(this.config.outputPath, dateStamp);
+			let content: string;
+			try {
+				content = await readFile(archivePath, "utf-8");
+			} catch {
+				continue;
+			}
+
+			const lines = content.split("\n");
+			for (const line of lines) {
+				const record = toLineRecord(line);
+				if (!record) {
+					continue;
+				}
+
+				const tweets = record.tweets;
+				if (!Array.isArray(tweets)) {
+					continue;
+				}
+
+				for (const tweet of tweets) {
+					if (!isRecord(tweet)) {
+						continue;
+					}
+					const tweetId = extractTweetId(tweet);
+					if (!tweetId) {
+						continue;
+					}
+
+					const previous = index.get(tweetId);
+					index.set(tweetId, {
+						hasTweetFullField: Boolean(previous?.hasTweetFullField || hasTweetFullField(tweet)),
+					});
+				}
+			}
+		}
+
+		return index;
+	}
+
+	private async enrichTweetsDepthOne(tweets: PersistedTwitterTweet[]): Promise<void> {
 		for (const tweet of tweets) {
 			if (!isRecord(tweet)) {
 				continue;
 			}
-			const quoted = tweet.quotedTweet;
-			if (!isRecord(quoted) || !isLongFormTweet(quoted)) {
-				continue;
-			}
 
-			const quotedId = extractTweetId(quoted);
-			if (!quotedId) {
-				continue;
-			}
-
-			let fullTweet = this.quotedTweetCache.get(quotedId);
-			if (!fullTweet) {
-				try {
-					fullTweet = await this.fetchTweetById(quotedId);
-					this.quotedTweetCache.set(quotedId, fullTweet);
-				} catch (error) {
-					logClusterEvent("warn", "twitter_collector_quoted_read_failed", this.lifecycleContext, {
-						quotedId,
-						error: error instanceof Error ? error.message : String(error),
-					});
-					continue;
+			const mainId = extractTweetId(tweet);
+			let fullMain: Record<string, unknown> | null = null;
+			if (mainId) {
+				fullMain = await this.loadTweetFull(mainId, "tweetFull");
+				if (fullMain) {
+					tweet.tweetFull = { ...fullMain };
 				}
 			}
 
-			tweet.quotedTweet = { ...fullTweet };
+			let quotedId: string | null = null;
+			const quoted = tweet.quotedTweet;
+			if (isRecord(quoted)) {
+				quotedId = extractTweetId(quoted);
+				if (quotedId) {
+					const fullQuoted = await this.loadTweetFull(quotedId, "quotedTweetFull");
+					if (fullQuoted) {
+						// Keep timeline snippet in quotedTweet; attach fetched full tweet separately.
+						tweet.quotedTweetFull = { ...fullQuoted };
+					}
+				}
+			}
+
+			const shortLinks = this.collectShortLinksForTweet(tweet, fullMain);
+			if (shortLinks.length === 0) {
+				continue;
+			}
+
+			const shortLinkMappings = await this.resolveShortLinkMappings(shortLinks);
+			if (shortLinkMappings.length > 0) {
+				const tweetFullByShortLinkTweetId = new Map<string, Record<string, unknown> | null>();
+				const enrichedShortLinkMappings: Record<string, unknown>[] = [];
+
+				for (const mapping of shortLinkMappings) {
+					const enriched: Record<string, unknown> = {
+						shortUrl: mapping.shortUrl,
+						resolvedUrl: mapping.resolvedUrl,
+						tweetId: mapping.statusId,
+					};
+
+					const statusId = mapping.statusId;
+					if (statusId && statusId !== mainId) {
+						let shortLinkTweetFull = tweetFullByShortLinkTweetId.get(statusId);
+						if (shortLinkTweetFull === undefined) {
+							shortLinkTweetFull = await this.loadTweetFull(statusId, "shortLinkTweetFull");
+							tweetFullByShortLinkTweetId.set(statusId, shortLinkTweetFull ?? null);
+						}
+
+						if (shortLinkTweetFull) {
+							enriched.tweetFull = { ...shortLinkTweetFull };
+						}
+					}
+
+					enrichedShortLinkMappings.push(enriched);
+				}
+
+				tweet.shortLinkMappings = enrichedShortLinkMappings;
+			}
 		}
+	}
+
+	private collectShortLinksForTweet(
+		tweet: Record<string, unknown>,
+		tweetFull: Record<string, unknown> | null,
+	): string[] {
+		const links = new Set<string>();
+
+		for (const shortUrl of extractTcoUrlsFromText(readString(tweet.text))) {
+			links.add(shortUrl);
+		}
+
+		if (tweetFull) {
+			for (const shortUrl of extractTcoUrlsFromText(readString(tweetFull.text))) {
+				links.add(shortUrl);
+			}
+			for (const shortUrl of extractTcoUrlsFromText(readString(tweetFull.fullText))) {
+				links.add(shortUrl);
+			}
+		}
+
+		return [...links];
+	}
+
+	private async resolveShortLinkMappings(shortLinks: string[]): Promise<ResolvedShortLinkMapping[]> {
+		const mappings: ResolvedShortLinkMapping[] = [];
+		for (const shortUrl of shortLinks) {
+			const mapping = await this.resolveShortLinkMapping(shortUrl);
+			mappings.push(mapping);
+		}
+		return mappings;
+	}
+
+	private async resolveShortLinkMapping(
+		shortUrl: string,
+	): Promise<ResolvedShortLinkMapping> {
+		let currentUrl = shortUrl;
+		let resolvedUrl: string | null = shortUrl;
+		const maxRedirects = 8;
+
+		for (let hop = 0; hop < maxRedirects; hop += 1) {
+			const directStatusId = extractStatusIdFromUrl(currentUrl);
+			if (directStatusId) {
+				return { shortUrl, resolvedUrl: currentUrl, statusId: directStatusId };
+			}
+
+			let response: Response;
+			try {
+				const timeoutMs = Math.max(500, this.config.requestTimeoutMs ?? this.config.commandTimeoutMs);
+				response = await fetch(currentUrl, {
+					method: "GET",
+					redirect: "manual",
+					signal: AbortSignal.timeout(timeoutMs),
+				});
+			} catch {
+				return { shortUrl, resolvedUrl, statusId: null };
+			}
+
+			if (response.url) {
+				resolvedUrl = response.url;
+			}
+
+			const responseStatusId = extractStatusIdFromUrl(response.url);
+			if (responseStatusId) {
+				void response.body?.cancel().catch(() => {
+					// no-op
+				});
+				return { shortUrl, resolvedUrl: response.url, statusId: responseStatusId };
+			}
+
+			const location = response.headers.get("location");
+			const isRedirect = response.status >= 300 && response.status < 400;
+			void response.body?.cancel().catch(() => {
+				// no-op
+			});
+
+			if (!isRedirect || !location) {
+				return { shortUrl, resolvedUrl, statusId: null };
+			}
+
+			try {
+				currentUrl = new URL(location, currentUrl).toString();
+				resolvedUrl = currentUrl;
+			} catch {
+				return { shortUrl, resolvedUrl, statusId: null };
+			}
+		}
+
+		return { shortUrl, resolvedUrl, statusId: null };
+	}
+
+	private async loadTweetFull(
+		tweetId: string,
+		targetField: "tweetFull" | "quotedTweetFull" | "shortLinkTweetFull",
+	): Promise<Record<string, unknown> | null> {
+		const cached = this.tweetFullCache.get(tweetId);
+		if (cached) {
+			return cached;
+		}
+
+		const maxAttempts = 2; // first try + one retry
+		let lastError: unknown;
+
+		for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+			try {
+				const fullTweet = await this.fetchTweetById(tweetId);
+				this.tweetFullCache.set(tweetId, fullTweet);
+				return fullTweet;
+			} catch (error) {
+				lastError = error;
+				if (attempt < maxAttempts) {
+					logClusterEvent("info", "twitter_collector_tweet_read_retry", this.lifecycleContext, {
+						tweetId,
+						targetField,
+						attempt,
+						nextAttempt: attempt + 1,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					await new Promise<void>((resolve) => setTimeout(resolve, 200));
+				}
+			}
+		}
+
+		logClusterEvent("warn", "twitter_collector_tweet_read_failed", this.lifecycleContext, {
+			tweetId,
+			targetField,
+			attempts: maxAttempts,
+			error: lastError instanceof Error ? lastError.message : String(lastError),
+		});
+		return null;
 	}
 
 	private async fetchForYouTimeline(): Promise<unknown> {
@@ -476,15 +1041,19 @@ class TwitterCollector implements TwitterCollectorHandle {
 			...this.birdGlobalArgs,
 			"read",
 			tweetId,
-			"--json",
+			"--json-full",
 			"--plain",
 		];
-		const result = await runBirdCommand(args, this.config.commandTimeoutMs);
+		const tempPrefix = join(tmpdir(), "mono-pilot-bird-read-");
+		await using tempDir = await createAsyncDisposableTempDir(tempPrefix);
+		const tempOutputPath = join(tempDir.path, `${tweetId}.json`);
+
+		const result = await runBirdCommandToFile(args, this.config.commandTimeoutMs, tempOutputPath);
 		if (result.code !== 0) {
-			throw new Error(formatBirdFailure(`bird read failed (${tweetId})`, result));
+			throw new Error(formatBirdFailure(`bird read failed (${tweetId})`, { ...result, stdout: "" }));
 		}
 
-		const stdout = result.stdout.trim();
+		const stdout = (await readFile(tempOutputPath, "utf-8")).trim();
 		if (!stdout) {
 			throw new Error(`bird read returned empty output (${tweetId})`);
 		}
@@ -502,7 +1071,24 @@ class TwitterCollector implements TwitterCollectorHandle {
 			throw new Error(`bird read output missing tweet object (${tweetId})`);
 		}
 
-		return payload;
+		const normalized: Record<string, unknown> = {};
+		const text = extractBestText(payload);
+		const fullText = extractBestFullText(payload);
+		const media = extractBestMedia(payload);
+
+		if (text) {
+			normalized.text = text;
+		}
+
+		if (fullText) {
+			normalized.fullText = fullText;
+		}
+
+		if (media) {
+			normalized.media = media;
+		}
+
+		return normalized;
 	}
 }
 

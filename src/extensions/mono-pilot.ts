@@ -4,6 +4,7 @@ import lsExtension from "../tools/ls.js";
 import shellExtension from "../tools/shell.js";
 import globExtension from "../tools/glob.js";
 import rgExtension from "../tools/rg.js";
+import astGrepExtension from "../tools/ast-grep.js";
 import readFileExtension from "../tools/read-file.js";
 import deleteExtension from "../tools/delete.js";
 import semanticSearchExtension from "../tools/semantic-search.js";
@@ -17,7 +18,8 @@ import fetchMcpResourceExtension from "../tools/fetch-mcp-resource.js";
 import listMcpToolsExtension from "../tools/list-mcp-tools.js";
 import callMcpToolExtension from "../tools/call-mcp-tool.js";
 import switchModeExtension from "../tools/switch-mode.js";
-import applyPatchExtension from "../tools/apply-patch.js";
+// import applyPatchExtension from "../tools/apply-patch.js";
+import codexApplyPatchExtension from "../tools/codex-apply-patch.js";
 import userMessageExtension from "./user-message.js";
 import systemPromptExtension from "./system-prompt.js";
 import sessionHintsExtension from "./session-hints.js";
@@ -30,6 +32,7 @@ import busSendExtension, { setBusSendHandle } from "../tools/bus-send.js";
 import mailboxExtension from "../tools/mailbox.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
 import { registerBuildMemoryCommand } from "./commands/build-memory.js";
+import { registerDigestCommand } from "./commands/digest/index.js";
 import { registerClusterCommands, setClusterHandle } from "./cluster.js";
 import { registerStatusCommand } from "./status.js";
 import { registerImageModelCommands } from "./commands/image-model.js";
@@ -41,6 +44,7 @@ const toolExtensions: ExtensionFactory[] = [
 	shellExtension,
 	globExtension,
 	rgExtension,
+	astGrepExtension,
 	readFileExtension,
 	deleteExtension,
 	lsExtension,
@@ -55,7 +59,8 @@ const toolExtensions: ExtensionFactory[] = [
 	listMcpToolsExtension,
 	callMcpToolExtension,
 	switchModeExtension,
-	applyPatchExtension,
+	// applyPatchExtension,
+	codexApplyPatchExtension,
 	userMessageExtension,
 	systemPromptExtension,
 	sessionHintsExtension,
@@ -76,6 +81,7 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 	registerSessionMemoryHook(pi);
 	registerSystemEvents(pi);
 	registerBuildMemoryCommand(pi);
+	registerDigestCommand(pi);
 	registerClusterCommands(pi);
 	registerStatusCommand(pi);
 	registerImageModelCommands(pi);
