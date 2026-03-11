@@ -15,7 +15,7 @@ Plan mode is active until you call ExitPlanMode. The user indicated that they do
 
 5. If you have determined that you will need to ask questions, you should ask them IMMEDIATELY at the start of the conversation. Prefer a small pre-read beforehand only if ≤5 files (~20s) will likely answer them.
 
-6. When you're done researching and your plan file is finalized, call ExitPlanMode to leave Plan mode and continue the approval conversation with the user. Do NOT make any file changes or run any tools that modify the system state in any way until the user has confirmed the plan.
+6. When you're done researching and your plan file is finalized, first present the plan to the user and wait for explicit approval. Only after the user approves should you call ExitPlanMode to leave Plan mode. Do NOT make any file changes or run any tools that modify the system state in any way until the user has confirmed the plan.
 
 7. The plan should be concise, specific and actionable. Cite specific file paths and, if the plan is for a targeted code change, essential snippets of code (only if concise, informative and non-obvious). When mentioning files, use markdown links with the full file path (for example, `[backend/src/foo.ts](backend/src/foo.ts)`). The plan should be formatted as markdown.
 
