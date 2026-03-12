@@ -26,7 +26,7 @@ type CommandContext = {
 };
 
 interface ParsedArgs {
-	subcommand: "classify" | "backfill";
+	subcommand: "draft" | "backfill";
 	date?: string;
 	file?: string;
 	concurrency?: number;
@@ -78,16 +78,16 @@ const CATEGORY_SET = new Set<string>(CATEGORIES);
 const FOCUS_CATEGORY_SET = new Set<string>(CATEGORIES.filter((category) => category !== IRRELEVANT_CATEGORY));
 const DEFAULT_DEBUG_SAMPLE_SIZE = 4;
 const CLASSIFICATION_TEXT_MAX_CHARS = 1024;
-const DIGEST_SCRATCH_PATH = join(homedir(), ".mono-pilot", "twitter", "scratch.md");
-const DIGEST_CLASSIFY_PATH = join(homedir(), ".mono-pilot", "twitter", "classify.md");
+const DIGEST_DRAFT_PATH = join(homedir(), ".mono-pilot", "twitter", "draft.md");
+const DIGEST_DRAFT_DEBUG_PATH = join(homedir(), ".mono-pilot", "twitter", "draft-debug.md");
 const ENABLE_CLASSIFICATION_BRANCH = true;
 let digestBackfillRunning = false;
-let digestClassifyRunning = false;
+let digestDraftRunning = false;
 const CLASSIFY_COOPERATIVE_YIELD_EVERY_LINES = 20;
 
 const USAGE = [
 	"Usage:",
-	"  /digest classify [--date YYYY-MM-DD] [--file <path>]",
+	"  /digest draft [--date YYYY-MM-DD] [--file <path>]",
 	"                   [--concurrency <N>] [--sample <N>]",
 	"                   [--provider <name>] [--model <id>]",
 	"  /digest backfill [--date YYYY-MM-DD] [--file <path>]",
@@ -115,17 +115,17 @@ function parseArgs(raw: string): ParsedArgs {
 		.filter((token) => token.length > 0);
 
 	if (tokens.length === 0) {
-		return { subcommand: "classify" };
+		return { subcommand: "draft" };
 	}
 
 	let cursor = 0;
 	const first = tokens[0];
-	let subcommand: "classify" | "backfill" = "classify";
+	let subcommand: "draft" | "backfill" = "draft";
 	if (first && !first.startsWith("--")) {
-		if (first !== "classify" && first !== "backfill") {
-			return { subcommand: "classify", error: `Unknown subcommand: ${first}.\n${USAGE}` };
+		if (first !== "draft" && first !== "classify" && first !== "backfill") {
+			return { subcommand: "draft", error: `Unknown subcommand: ${first}.\n${USAGE}` };
 		}
-		subcommand = first;
+		subcommand = first === "classify" ? "draft" : first;
 		cursor = 1;
 	}
 
@@ -203,7 +203,7 @@ function parseArgs(raw: string): ParsedArgs {
 			continue;
 		}
 
-		return { subcommand: "classify", error: `Unknown argument: ${token}.\n${USAGE}` };
+		return { subcommand: "draft", error: `Unknown argument: ${token}.\n${USAGE}` };
 	}
 
 	return parsed;
@@ -331,6 +331,19 @@ function extractTweetId(tweet: Record<string, unknown>): string | null {
 	);
 }
 
+function extractAuthorName(tweet: Record<string, unknown> | null): string | null {
+	if (!tweet) {
+		return null;
+	}
+
+	const author = isRecord(tweet.author) ? tweet.author : null;
+	if (!author) {
+		return null;
+	}
+
+	return readString(author.name) ?? readString(author.screen_name);
+}
+
 function buildClassificationPayload(tweet: Record<string, unknown>): Record<string, unknown> {
 	const tweetFull = isRecord(tweet.tweetFull) ? tweet.tweetFull : null;
 	const quoted = isRecord(tweet.quotedTweet) ? tweet.quotedTweet : null;
@@ -400,18 +413,22 @@ function buildScratchPayload(tweet: Record<string, unknown>): Record<string, unk
 		),
 		quotedText,
 	);
+	const tweetAuthorName = extractAuthorName(tweet) ?? extractAuthorName(tweetFull);
+	const quotedAuthorName = extractAuthorName(quotedFull) ?? extractAuthorName(quoted);
 
 	return {
 		tweet: {
 			id: extractTweetId(tweet),
 			text: tweetText,
 			fullText: tweetFullText,
+			authorName: tweetAuthorName,
 		},
 		quotedTweet: quoted
 			? {
 					id: extractTweetId(quoted),
 					text: quotedText,
 					fullText: quotedFullText,
+					authorName: quotedAuthorName,
 			  }
 			: null,
 	};
@@ -742,6 +759,7 @@ function pickRandomItems<T>(items: T[], count: number): T[] {
 type ScratchQuotedNode = {
 	indexId: string;
 	tweetId: string | null;
+	authorName: string | null;
 	text: string;
 	referencedBy: string[];
 	sourceKinds: string[];
@@ -750,6 +768,7 @@ type ScratchQuotedNode = {
 type ScratchMainNode = {
 	indexId: string;
 	tweetId: string | null;
+	authorName: string | null;
 	text: string;
 	referenceIndexIds: string[];
 	sourceRef: string;
@@ -883,6 +902,7 @@ function buildClassificationScratchMarkdown(
 
 		const mainIndexId = `T${keptCount}`;
 		const mainTweetId = tweetPart ? readString(tweetPart.id) : null;
+		const mainAuthorName = tweetPart ? readString(tweetPart.authorName) : null;
 		const mainShortLinkMappings = toScratchShortLinkMappings(item.tweet.shortLinkMappings);
 		const mainText = rewriteShortLinksForScratch(
 			pickPayloadPrimaryText(tweetPart),
@@ -893,6 +913,7 @@ function buildClassificationScratchMarkdown(
 		const referenceIndexIds: string[] = [];
 		if (quotedPart) {
 			const quotedTweetId = readString(quotedPart.id);
+			const quotedAuthorName = readString(quotedPart.authorName);
 			const quotedSource = isRecord(item.tweet.quotedTweetFull)
 				? item.tweet.quotedTweetFull
 				: isRecord(item.tweet.quotedTweet)
@@ -911,6 +932,7 @@ function buildClassificationScratchMarkdown(
 				quotedNode = {
 					indexId: `Q${nextQuotedIndex}`,
 					tweetId: quotedTweetId,
+					authorName: quotedAuthorName,
 					text: quotedText,
 					referencedBy: [],
 					sourceKinds: ["quoted"],
@@ -923,6 +945,9 @@ function buildClassificationScratchMarkdown(
 			pushUnique(referenceIndexIds, quotedNode.indexId);
 			pushUnique(quotedNode.referencedBy, mainIndexId);
 			pushUnique(quotedNode.sourceKinds, "quoted");
+			if (!quotedNode.authorName && quotedAuthorName) {
+				quotedNode.authorName = quotedAuthorName;
+			}
 		}
 
 		const shortLinkMappings = Array.isArray(item.tweet.shortLinkMappings) ? item.tweet.shortLinkMappings : [];
@@ -933,6 +958,7 @@ function buildClassificationScratchMarkdown(
 
 			const mappingTweetId = readString(mapping.tweetId);
 			const mappingTweetFull = isRecord(mapping.tweetFull) ? mapping.tweetFull : null;
+			const mappingAuthorName = extractAuthorName(mappingTweetFull);
 			const mappingShortLinkMappings = toScratchShortLinkMappings(mappingTweetFull?.shortLinkMappings);
 			const mappingText = rewriteShortLinksForScratch(
 				pickPayloadPrimaryText(mappingTweetFull),
@@ -952,6 +978,7 @@ function buildClassificationScratchMarkdown(
 				mappingNode = {
 					indexId: `Q${nextQuotedIndex}`,
 					tweetId: mappingTweetId,
+					authorName: mappingAuthorName,
 					text: fallbackText,
 					referencedBy: [],
 					sourceKinds: ["shortLink"],
@@ -964,11 +991,15 @@ function buildClassificationScratchMarkdown(
 			pushUnique(referenceIndexIds, mappingNode.indexId);
 			pushUnique(mappingNode.referencedBy, mainIndexId);
 			pushUnique(mappingNode.sourceKinds, "shortLink");
+			if (!mappingNode.authorName && mappingAuthorName) {
+				mappingNode.authorName = mappingAuthorName;
+			}
 		}
 
 		mainNodes.push({
 			indexId: mainIndexId,
 			tweetId: mainTweetId,
+			authorName: mainAuthorName,
 			text: mainText,
 			referenceIndexIds,
 			sourceRef: `${parse(item.archiveFile).base}:line=${item.lineNumber},tweetIndex=${item.tweetIndex}`,
@@ -981,7 +1012,7 @@ function buildClassificationScratchMarkdown(
 	const droppedCount = items.length - keptCount;
 
 	const lines: string[] = [];
-	lines.push("# Digest Classify Scratch");
+	lines.push("# Digest Draft");
 	lines.push("");
 	lines.push(`- generatedAt: ${new Date().toISOString()}`);
 	lines.push(`- source: ${sourceFile}`);
@@ -1000,7 +1031,7 @@ function buildClassificationScratchMarkdown(
 			const refs = quotedNode.referencedBy.join(", ");
 			const sourceKinds = quotedNode.sourceKinds.join("+");
 			lines.push(
-				`### [${quotedNode.indexId}] id=${quotedNode.tweetId ?? "n/a"} source=${sourceKinds || "unknown"} referencedBy=${refs || "none"}`,
+				`### [${quotedNode.indexId}] id=${quotedNode.tweetId ?? "n/a"} author=${quotedNode.authorName ?? "n/a"} source=${sourceKinds || "unknown"} referencedBy=${refs || "none"}`,
 			);
 			lines.push("```text");
 			lines.push(quotedNode.text || "(no text)");
@@ -1018,7 +1049,7 @@ function buildClassificationScratchMarkdown(
 	for (const mainNode of mainNodes) {
 		const refs = mainNode.referenceIndexIds.length > 0 ? mainNode.referenceIndexIds.join(",") : "none";
 		lines.push(
-			`### [${mainNode.indexId}] id=${mainNode.tweetId ?? "n/a"} category=${mainNode.category} confidence=${mainNode.confidence.toFixed(2)} reason=${mainNode.reason || ""} refs=${refs} source=${mainNode.sourceRef}`,
+			`### [${mainNode.indexId}] id=${mainNode.tweetId ?? "n/a"} author=${mainNode.authorName ?? "n/a"} category=${mainNode.category} confidence=${mainNode.confidence.toFixed(2)} reason=${mainNode.reason || ""} refs=${refs} source=${mainNode.sourceRef}`,
 		);
 		lines.push("```text");
 		lines.push(mainNode.text || "(no text)");
@@ -1039,7 +1070,7 @@ function buildClassificationResultMarkdown(
 	meta: { sourceFile: string; modelLabel: string; elapsedMs: number },
 ): string {
 	const lines: string[] = [];
-	lines.push("# Digest Classify Result");
+	lines.push("# Digest Draft Classification Result");
 	lines.push("");
 	lines.push(`- generatedAt: ${new Date().toISOString()}`);
 	lines.push(`- source: ${meta.sourceFile}`);
@@ -1206,7 +1237,7 @@ function notify(ctx: CommandContext, message: string, level: NotifyLevel): void 
 	console.log(`${prefix} ${message}`);
 }
 
-async function runDigestClassifyTask(
+async function runDigestDraftTask(
 	parsed: ParsedArgs,
 	ctx: CommandContext,
 	twitterConfig: ReturnType<typeof extractTwitterCollectorConfig>,
@@ -1255,7 +1286,7 @@ async function runDigestClassifyTask(
 	if (!ENABLE_CLASSIFICATION_BRANCH) {
 		notify(
 			ctx,
-			"Digest classify branch is disabled; exported sorted single-day cumulative archive to scratch only.",
+			"Digest draft branch is disabled; exported sorted single-day cumulative archive to draft only.",
 			"info",
 		);
 		return;
@@ -1289,7 +1320,7 @@ async function runDigestClassifyTask(
 
 	notify(
 		ctx,
-		`Digest classify start: full ${items.length} tweets from ${sourceFile}, model=${provider}/${modelId}, concurrency=${concurrency}.`,
+		`Digest draft start: full ${items.length} tweets from ${sourceFile}, model=${provider}/${modelId}, concurrency=${concurrency}.`,
 		"info",
 	);
 
@@ -1385,7 +1416,7 @@ async function runDigestClassifyTask(
 			const now = Date.now();
 			if (completed === total || now - lastProgressAt >= 3_000) {
 				lastProgressAt = now;
-				notify(ctx, `Digest classify progress: ${completed}/${total}`, "info");
+				notify(ctx, `Digest draft progress: ${completed}/${total}`, "info");
 			}
 		},
 	);
@@ -1393,17 +1424,17 @@ async function runDigestClassifyTask(
 	const elapsedMs = Date.now() - startedAt;
 	try {
 		const scratch = buildClassificationScratchMarkdown(items, results, sourceFile);
-		await mkdir(dirname(DIGEST_SCRATCH_PATH), { recursive: true });
-		await writeFile(DIGEST_SCRATCH_PATH, scratch.markdown, "utf-8");
+		await mkdir(dirname(DIGEST_DRAFT_PATH), { recursive: true });
+		await writeFile(DIGEST_DRAFT_PATH, scratch.markdown, "utf-8");
 		notify(
 			ctx,
-			`Digest scratch updated: ${DIGEST_SCRATCH_PATH} (kept=${scratch.keptCount}, droppedIrrelevant=${scratch.droppedCount})`,
+			`Digest draft updated: ${DIGEST_DRAFT_PATH} (kept=${scratch.keptCount}, droppedIrrelevant=${scratch.droppedCount})`,
 			"info",
 		);
 	} catch (error) {
 		notify(
 			ctx,
-			`Digest scratch write failed: ${error instanceof Error ? error.message : String(error)}`,
+			`Digest draft write failed: ${error instanceof Error ? error.message : String(error)}`,
 			"warning",
 		);
 	}
@@ -1414,13 +1445,13 @@ async function runDigestClassifyTask(
 			modelLabel: `${model.provider}/${model.id}`,
 			elapsedMs,
 		});
-		await mkdir(dirname(DIGEST_CLASSIFY_PATH), { recursive: true });
-		await writeFile(DIGEST_CLASSIFY_PATH, classifyMarkdown, "utf-8");
-		notify(ctx, `Digest classify debug written: ${DIGEST_CLASSIFY_PATH}`, "info");
+		await mkdir(dirname(DIGEST_DRAFT_DEBUG_PATH), { recursive: true });
+		await writeFile(DIGEST_DRAFT_DEBUG_PATH, classifyMarkdown, "utf-8");
+		notify(ctx, `Digest draft debug written: ${DIGEST_DRAFT_DEBUG_PATH}`, "info");
 	} catch (error) {
 		notify(
 			ctx,
-			`Digest classify debug write failed: ${error instanceof Error ? error.message : String(error)}`,
+			`Digest draft debug write failed: ${error instanceof Error ? error.message : String(error)}`,
 			"warning",
 		);
 	}
@@ -1429,14 +1460,14 @@ async function runDigestClassifyTask(
 	const focusStats = summarizeFocusTokenStats(items, results);
 	notify(
 		ctx,
-		`Digest classify debug done (${elapsedMs}ms). ${summarizeByCategory(results)}. focusTweets=${focusStats.focusTweetCount} focusTextTokens=${focusStats.focusTextTokens} (estimated).`,
+		`Digest draft debug done (${elapsedMs}ms). ${summarizeByCategory(results)}. focusTweets=${focusStats.focusTweetCount} focusTextTokens=${focusStats.focusTextTokens} (estimated).`,
 		"info",
 	);
 }
 
 export function registerDigestCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("digest", {
-		description: "Digest commands: classify/backfill twitter archive",
+		description: "Digest commands: draft/backfill twitter archive",
 		handler: async (args, ctx) => {
 			const parsed = parseArgs(args);
 			if (parsed.error) {
@@ -1444,7 +1475,7 @@ export function registerDigestCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			if (parsed.subcommand !== "classify" && parsed.subcommand !== "backfill") {
+			if (parsed.subcommand !== "draft" && parsed.subcommand !== "backfill") {
 				notify(ctx as CommandContext, USAGE, "warning");
 				return;
 			}
@@ -1497,28 +1528,28 @@ export function registerDigestCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			if (digestClassifyRunning) {
-				notify(ctx as CommandContext, "Digest classify is already running.", "warning");
+			if (digestDraftRunning) {
+				notify(ctx as CommandContext, "Digest draft is already running.", "warning");
 				return;
 			}
 
-			digestClassifyRunning = true;
+			digestDraftRunning = true;
 			notify(
 				ctx as CommandContext,
-				"Digest classify started in background. Check /events for progress.",
+				"Digest draft started in background. Check /events for progress.",
 				"info",
 			);
 
-			void runDigestClassifyTask(parsed, ctx as CommandContext, twitterConfig, digestConfig)
+			void runDigestDraftTask(parsed, ctx as CommandContext, twitterConfig, digestConfig)
 				.catch((error) => {
 					notify(
 						ctx as CommandContext,
-						`Digest classify crashed: ${error instanceof Error ? error.message : String(error)}`,
+						`Digest draft crashed: ${error instanceof Error ? error.message : String(error)}`,
 						"error",
 					);
 				})
 				.finally(() => {
-					digestClassifyRunning = false;
+					digestDraftRunning = false;
 				});
 			return;
 		},

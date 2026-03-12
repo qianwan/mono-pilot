@@ -24,6 +24,7 @@ import codexApplyPatchExtension from "../tools/codex-apply-patch.js";
 import userMessageExtension from "./user-message.js";
 import systemPromptExtension from "./system-prompt.js";
 import sessionHintsExtension from "./session-hints.js";
+import nvimExtension from "./nvim.js";
 import lspDiagnosticsExtension from "../tools/lsp-diagnostics.js";
 import lspSymbolsExtension from "../tools/lsp-symbols.js";
 import briefWriteExtension from "../tools/brief-write.js";
@@ -66,6 +67,7 @@ const toolExtensions: ExtensionFactory[] = [
 	userMessageExtension,
 	systemPromptExtension,
 	sessionHintsExtension,
+	nvimExtension,
 	lspDiagnosticsExtension,
 	lspSymbolsExtension,
 	briefWriteExtension,

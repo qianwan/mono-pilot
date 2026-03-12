@@ -37,6 +37,7 @@ Tool descriptions are now loaded by the tool implementation and exposed via the 
   - Search the web for current information with result snippets.
 - `web-fetch.ts` (`WebFetch`)
   - Fetch web page content and return readable markdown.
+  - Detects common anti-bot/captcha interstitial pages (for example WeChat risk-control pages) and returns an explicit block reason instead of noisy converted HTML.
 - `generate-image.ts` (`GenerateImage`)
   - Generate images with Gemini API or OpenRouter.
 - `ask-question.ts` (`AskQuestion`)

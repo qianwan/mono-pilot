@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { visibleWidth } from "@mariozechner/pi-tui";
 
 type NotifyLevel = "info" | "warning" | "error";
 
@@ -202,20 +203,71 @@ function wrapFixedWidth(text: string, width: number): string[] {
 			lines.push("");
 			continue;
 		}
-		let cursor = 0;
-		while (cursor < segment.length) {
-			lines.push(segment.slice(cursor, cursor + normalizedWidth));
-			cursor += normalizedWidth;
+
+		let current = "";
+		let currentWidth = 0;
+		for (const char of segment) {
+			const charWidth = Math.max(1, visibleWidth(char));
+			if (currentWidth + charWidth > normalizedWidth && current.length > 0) {
+				lines.push(current);
+				current = "";
+				currentWidth = 0;
+			}
+			current += char;
+			currentWidth += charWidth;
+		}
+
+		if (current.length > 0) {
+			lines.push(current);
 		}
 	}
 	return lines;
 }
 
-function padRight(value: string, width: number): string {
-	if (value.length >= width) {
-		return value.slice(0, width);
+function truncateToDisplayWidth(value: string, width: number): string {
+	const normalizedWidth = Math.max(0, width);
+	if (normalizedWidth <= 0) {
+		return "";
 	}
-	return value + " ".repeat(width - value.length);
+
+	let output = "";
+	let usedWidth = 0;
+	for (const char of value) {
+		const charWidth = Math.max(1, visibleWidth(char));
+		if (usedWidth + charWidth > normalizedWidth) {
+			break;
+		}
+		output += char;
+		usedWidth += charWidth;
+	}
+
+	return output;
+}
+
+function truncateWithEllipsis(value: string, width: number): string {
+	const normalizedWidth = Math.max(0, width);
+	if (visibleWidth(value) <= normalizedWidth) {
+		return value;
+	}
+
+	const ellipsis = "...";
+	const ellipsisWidth = visibleWidth(ellipsis);
+	if (normalizedWidth <= ellipsisWidth) {
+		return truncateToDisplayWidth(ellipsis, normalizedWidth);
+	}
+
+	const contentWidth = normalizedWidth - ellipsisWidth;
+	return `${truncateToDisplayWidth(value, contentWidth)}${ellipsis}`;
+}
+
+function padRight(value: string, width: number): string {
+	const normalizedWidth = Math.max(0, width);
+	const fitted = truncateToDisplayWidth(value, normalizedWidth);
+	const fittedWidth = visibleWidth(fitted);
+	if (fittedWidth >= normalizedWidth) {
+		return fitted;
+	}
+	return fitted + " ".repeat(normalizedWidth - fittedWidth);
 }
 
 function shouldShowOverlay(key: string, now: number): boolean {
@@ -376,14 +428,15 @@ function showOverlay(
 							Math.min(width - 2, ERROR_OVERLAY_MAX_WIDTH),
 						);
 						const rowWidth = Math.max(24, panelWidth - 2);
-						const rowInnerWidth = Math.max(16, rowWidth - 2);
+						// Reserve one extra trailing cell before the right border so
+						// full-width CJK glyphs never land on the border boundary.
+						const rowInnerWidth = Math.max(16, rowWidth - 3);
 
 						const messageChunks = wrapFixedWidth(message, rowInnerWidth);
 						const visibleChunks = messageChunks.slice(0, ERROR_OVERLAY_MAX_MESSAGE_LINES);
 						if (messageChunks.length > visibleChunks.length && visibleChunks.length > 0) {
 							const last = visibleChunks[visibleChunks.length - 1] ?? "";
-							visibleChunks[visibleChunks.length - 1] =
-								last.length >= rowInnerWidth ? `${last.slice(0, rowInnerWidth - 3)}...` : `${last}...`;
+							visibleChunks[visibleChunks.length - 1] = truncateWithEllipsis(last, rowInnerWidth);
 						}
 
 						const baseTitle = `${
@@ -393,19 +446,19 @@ function showOverlay(
 									? "SYSTEM WARNING"
 									: "SYSTEM INFO"
 						} [${source}]`;
-						const titleLabelWidth = Math.max(1, rowInnerWidth - OVERLAY_CLOSE_MARK.length - 1);
+						const titleLabelWidth = Math.max(1, rowInnerWidth - visibleWidth(OVERLAY_CLOSE_MARK) - 1);
 						const title = `${padRight(baseTitle, titleLabelWidth)} ${OVERLAY_CLOSE_MARK}`;
 						const rows: string[] = [
 							`┌${"─".repeat(rowWidth)}┐`,
-							`│ ${padRight(title, rowInnerWidth)} │`,
+							`│ ${padRight(title, rowInnerWidth)}  │`,
 							`├${"─".repeat(rowWidth)}┤`,
 						];
 
 						if (visibleChunks.length === 0) {
-							rows.push(`│ ${padRight("(no message)", rowInnerWidth)} │`);
+							rows.push(`│ ${padRight("(no message)", rowInnerWidth)}  │`);
 						} else {
 							for (const chunk of visibleChunks) {
-								rows.push(`│ ${padRight(chunk, rowInnerWidth)} │`);
+								rows.push(`│ ${padRight(chunk, rowInnerWidth)}  │`);
 							}
 						}
 
@@ -458,7 +511,8 @@ function showOverlay(
 							const closeOffset = titleRowText.indexOf(OVERLAY_CLOSE_MARK);
 							const glyphOffset = OVERLAY_CLOSE_MARK.indexOf(OVERLAY_CLOSE_GLYPH);
 							if (closeOffset >= 0 && glyphOffset >= 0) {
-								layoutState.closeX = col + 1 + closeOffset + glyphOffset;
+								const beforeGlyph = titleRowText.slice(0, closeOffset + glyphOffset);
+								layoutState.closeX = col + 1 + visibleWidth(beforeGlyph);
 								layoutState.closeY = row + titleVisibleIndex + 1;
 							} else {
 								layoutState.closeX = -1;

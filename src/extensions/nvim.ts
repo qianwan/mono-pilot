@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { Text } from "@mariozechner/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 const NVIM_SHORTCUT = "alt+o";
@@ -15,7 +16,7 @@ function resolveEditor(): "nvim" | "vim" | undefined {
 	return undefined;
 }
 
-function openWorkspaceInEditor(ctx: ExtensionContext, editor: "nvim" | "vim"): { ok: true } | { ok: false; reason: string } {
+function runWorkspaceEditor(ctx: ExtensionContext, editor: "nvim" | "vim"): { ok: true } | { ok: false; reason: string } {
 	const result = spawnSync(editor, [ctx.cwd], {
 		stdio: "inherit",
 		shell: process.platform === "win32",
@@ -33,13 +34,52 @@ function openWorkspaceInEditor(ctx: ExtensionContext, editor: "nvim" | "vim"): {
 	return { ok: true };
 }
 
+async function openWorkspaceInEditor(
+	ctx: ExtensionContext,
+	editor: "nvim" | "vim",
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+	if (!ctx.hasUI) {
+		return runWorkspaceEditor(ctx, editor);
+	}
+
+	let launchResult: { ok: true } | { ok: false; reason: string } = {
+		ok: false,
+		reason: "Editor launch did not complete.",
+	};
+
+	await ctx.ui.custom<void>(
+		(tui, theme, _keybindings, done) => {
+			queueMicrotask(() => {
+				try {
+					tui.stop();
+					launchResult = runWorkspaceEditor(ctx, editor);
+				} finally {
+					tui.start();
+					try {
+						tui.terminal.enableMouse();
+					} catch {
+						// Best-effort: mouse capability differs across terminals.
+					}
+					tui.requestRender(true);
+					done();
+				}
+			});
+
+			return new Text(theme.fg("muted", `Opening ${editor}...`), 0, 0);
+		},
+		{ overlay: true },
+	);
+
+	return launchResult;
+}
+
 export default function nvimExtension(pi: ExtensionAPI): void {
 	pi.registerShortcut(NVIM_SHORTCUT, {
 		description: "Open workspace in nvim file explorer (fallback: vim)",
-		handler: async (ctx) => {
-			if (!ctx.hasUI) {
-				return;
-			}
+			handler: async (ctx) => {
+				if (!ctx.hasUI) {
+					return;
+				}
 
 			const editor = resolveEditor();
 			if (!editor) {
@@ -47,7 +87,7 @@ export default function nvimExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const result = openWorkspaceInEditor(ctx, editor);
+			const result = await openWorkspaceInEditor(ctx, editor);
 			if (!result.ok) {
 				ctx.ui.notify(`Failed to open ${editor}: ${result.reason}`, "warning");
 			}
