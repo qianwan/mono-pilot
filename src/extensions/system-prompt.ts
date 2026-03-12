@@ -12,7 +12,6 @@ const CURRENT_WORKING_DIRECTORY_PREFIX = "Current working directory:";
 
 const AVAILABLE_TOOLS_TOKEN = "{{AVAILABLE_TOOLS_BULLETS}}";
 const PROJECT_CONTEXT_TOKEN = "{{PROJECT_CONTEXT_BLOCK}}";
-const CURRENT_DATETIME_TOKEN = "{{CURRENT_DATETIME}}";
 const CURRENT_WORKING_DIRECTORY_TOKEN = "{{CURRENT_WORKING_DIRECTORY}}";
 const PI_README_PATH_TOKEN = "{{PI_README_PATH}}";
 const PI_DOCS_PATH_TOKEN = "{{PI_DOCS_PATH}}";
@@ -97,6 +96,8 @@ After substantive edits, use the ReadLints tool to check recently edited files f
 </pi_docs_policy>
 
 <project_context>
+Current working directory: ${CURRENT_WORKING_DIRECTORY_TOKEN}
+
 ${PROJECT_CONTEXT_TOKEN}
 </project_context>
 
@@ -168,14 +169,22 @@ You are producing plain text that will later be styled by Cursor. Follow these r
 </intermediary_updates>
 </working_with_the_user>
 
+<soul>
+You are a coding agent, but your core identity is the user's in-repo alter ego.
+Treat the user, the assistant, and the executing agent as one collaborative system with shared ownership.
+Your job is not only to solve immediate tasks together, but also to grow the system together.
+Improving meta-level capabilities (for example workflow clarity, tool quality, and feedback loops) is also valid progress when it serves the current task.
+
+- user: defines goals, priorities, and acceptance criteria.
+- assistant: the reasoning/planning layer that translates goals into decisions and communication.
+- executing-agent: the action layer that executes tools, applies changes, and returns runtime evidence.
+
+These are distinct roles in function, but unified in intent: solve tasks together and improve the system together.
+</soul>
+
 <main_goal>
 Your main goal is to follow the USER's instructions at each message, denoted by the <user_query> tag.
 </main_goal>
-
-<runtime_context>
-Current date and time: ${CURRENT_DATETIME_TOKEN}
-Current working directory: ${CURRENT_WORKING_DIRECTORY_TOKEN}
-</runtime_context>
 ${SKILLS_BLOCK_TOKEN}`;
 
 function getFirstDescriptionLine(description: string | undefined): string {
@@ -233,7 +242,6 @@ function renderTemplate(
 	values: {
 		tools: string;
 		projectContext: string;
-		currentDateTime: string;
 		cwd: string;
 		piReadmePath: string;
 		piDocsPath: string;
@@ -247,8 +255,6 @@ function renderTemplate(
 		.join(values.tools)
 		.split(PROJECT_CONTEXT_TOKEN)
 		.join(values.projectContext)
-		.split(CURRENT_DATETIME_TOKEN)
-		.join(values.currentDateTime)
 		.split(CURRENT_WORKING_DIRECTORY_TOKEN)
 		.join(values.cwd)
 		.split(PI_README_PATH_TOKEN)
@@ -261,10 +267,6 @@ function renderTemplate(
 		.join(values.skillsBlock)
 		.split(BRIEF_BLOCK_TOKEN)
 		.join(values.briefBlock);
-}
-
-function getFallbackDateTimeText(): string {
-	return new Date().toString();
 }
 
 interface PiDocsPaths {
@@ -326,8 +328,6 @@ export default function systemPromptExtension(pi: ExtensionAPI) {
 		const piDocsPaths = resolvePiDocsPaths();
 		const projectContext =
 			extractProjectContextBlock(event.systemPrompt) ?? "Project-specific instructions were not provided.";
-		const currentDateTime =
-			extractValueAfterPrefix(event.systemPrompt, CURRENT_DATETIME_PREFIX) ?? getFallbackDateTimeText();
 		const cwd =
 			extractValueAfterPrefix(event.systemPrompt, CURRENT_WORKING_DIRECTORY_PREFIX) ?? process.cwd();
 
@@ -340,7 +340,6 @@ export default function systemPromptExtension(pi: ExtensionAPI) {
 		const unifiedPrompt = renderTemplate(UNIFIED_SYSTEM_PROMPT_TEMPLATE, {
 			tools,
 			projectContext,
-			currentDateTime,
 			cwd,
 			piReadmePath: piDocsPaths.readmePath,
 			piDocsPath: piDocsPaths.docsPath,
@@ -352,7 +351,6 @@ export default function systemPromptExtension(pi: ExtensionAPI) {
 		if (unifiedPrompt === event.systemPrompt) {
 			return undefined;
 		}
-        // console.log(unifiedPrompt);
 
 		return { systemPrompt: unifiedPrompt };
 	});

@@ -33,6 +33,17 @@ const PLAN_MODE_REMINDER_PATH = fileURLToPath(new URL("../../tools/plan-mode-rem
 const ASK_MODE_REMINDER_PATH = fileURLToPath(new URL("../../tools/ask-mode-reminder.md", import.meta.url));
 const MCP_INSTRUCTIONS_DESCRIPTION = "Instructions provided by MCP servers to help use them properly";
 const USER_QUERY_RENDER_PATCH_FLAG = "__monoPilotUserQueryRenderPatched__";
+const USER_MESSAGE_MODULE_PATH = fileURLToPath(import.meta.url);
+
+const CURRENT_DATE_TIME_REMINDER_PREFIX = "Current date and time:";
+
+const DEV_RUNTIME_TOOL_EFFICIENCY_REMINDER = `<system_reminder>
+Detected development runtime (extension loaded from src/*.ts with runtime transpilation).
+Always keep the current task goal first; only focus on tool-usage efficiency when the task is blocked or clear inefficiency appears.
+When inefficiency is directly related to the current task, tool changes are allowed, but must be incremental: add observability/visibility first, then apply the smallest necessary logic adjustment.
+Keep changes scoped, avoid unrelated refactors, and keep behavior verifiable; run npm run check after edits (and run npm run build when src changes).
+If user intent or change boundaries are unclear, ask before modifying.
+</system_reminder>`;
 
 interface ServerInstructions {
 	server: string;
@@ -122,6 +133,35 @@ function appendPlanFileReminder(reminder: string | undefined, snapshot: ModeStat
 	}
 
 	return `${reminder}\n\n${planFileReminder}`;
+}
+
+function isDevRuntimeModulePath(modulePath: string): boolean {
+	const normalized = modulePath.replace(/\\/g, "/");
+	return normalized.includes("/src/") && normalized.endsWith(".ts");
+}
+
+function appendDevRuntimeToolEfficiencyReminder(reminder: string | undefined): string | undefined {
+	if (!isDevRuntimeModulePath(USER_MESSAGE_MODULE_PATH)) {
+		return reminder;
+	}
+
+	if (!reminder) {
+		return DEV_RUNTIME_TOOL_EFFICIENCY_REMINDER;
+	}
+
+	return `${reminder}\n\n${DEV_RUNTIME_TOOL_EFFICIENCY_REMINDER}`;
+}
+
+function buildCurrentDateTimeReminder(now: Date = new Date()): string {
+	return `<system_reminder>\n${CURRENT_DATE_TIME_REMINDER_PREFIX} ${now.toString()}\n</system_reminder>`;
+}
+
+function appendCurrentDateTimeReminder(reminder: string | undefined, now: Date = new Date()): string {
+	const dateTimeReminder = buildCurrentDateTimeReminder(now);
+	if (!reminder) {
+		return dateTimeReminder;
+	}
+	return `${reminder}\n\n${dateTimeReminder}`;
 }
 
 async function fetchServerInstructions(
@@ -357,6 +397,8 @@ export default function runtimeEnvelopeExtension(pi: ExtensionAPI) {
 			askEntryReminder,
 		);
 		const reminderWithPlanFile = appendPlanFileReminder(reminder, snapshot);
+		const reminderWithDevToolEfficiency = appendDevRuntimeToolEfficiencyReminder(reminderWithPlanFile);
+		const reminderWithCurrentDateTime = appendCurrentDateTimeReminder(reminderWithDevToolEfficiency);
 		if (changed) {
 			pi.appendEntry(MODE_STATE_ENTRY_TYPE, createModeStateData(snapshot));
 		}
@@ -365,7 +407,13 @@ export default function runtimeEnvelopeExtension(pi: ExtensionAPI) {
 
 		return {
 			action: "transform",
-			text: buildRuntimeEnvelope(event.text, reminderWithPlanFile, mcpInstructions, rulesEnvelope, briefReminder),
+			text: buildRuntimeEnvelope(
+				event.text,
+				reminderWithCurrentDateTime,
+				mcpInstructions,
+				rulesEnvelope,
+				briefReminder,
+			),
 			images: event.images,
 		};
 	});
