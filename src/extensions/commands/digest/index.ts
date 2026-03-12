@@ -378,6 +378,45 @@ function buildClassificationPayload(tweet: Record<string, unknown>): Record<stri
 	};
 }
 
+function buildScratchPayload(tweet: Record<string, unknown>): Record<string, unknown> {
+	const tweetFull = isRecord(tweet.tweetFull) ? tweet.tweetFull : null;
+	const quoted = isRecord(tweet.quotedTweet) ? tweet.quotedTweet : null;
+	const quotedFull = isRecord(tweet.quotedTweetFull) ? tweet.quotedTweetFull : null;
+
+	const tweetText = readString(tweet.text);
+	const tweetFullText = pickLongerText(
+		pickLongerText(
+			tweetFull ? readString(tweetFull.fullText) : null,
+			tweetFull ? readString(tweetFull.text) : null,
+		),
+		tweetText,
+	);
+
+	const quotedText = quoted ? readString(quoted.text) : null;
+	const quotedFullText = pickLongerText(
+		pickLongerText(
+			quotedFull ? readString(quotedFull.fullText) : null,
+			quotedFull ? readString(quotedFull.text) : null,
+		),
+		quotedText,
+	);
+
+	return {
+		tweet: {
+			id: extractTweetId(tweet),
+			text: tweetText,
+			fullText: tweetFullText,
+		},
+		quotedTweet: quoted
+			? {
+					id: extractTweetId(quoted),
+					text: quotedText,
+					fullText: quotedFullText,
+			  }
+			: null,
+	};
+}
+
 function buildClassifierUserPrompt(tweet: Record<string, unknown>): string {
 	const payload = buildClassificationPayload(tweet);
 	return [
@@ -838,7 +877,7 @@ function buildClassificationScratchMarkdown(
 		}
 
 		keptCount += 1;
-		const payload = buildClassificationPayload(item.tweet);
+		const payload = buildScratchPayload(item.tweet);
 		const tweetPart = isRecord(payload.tweet) ? payload.tweet : null;
 		const quotedPart = isRecord(payload.quotedTweet) ? payload.quotedTweet : null;
 

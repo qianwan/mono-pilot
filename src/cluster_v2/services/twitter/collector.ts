@@ -37,11 +37,23 @@ interface PersistedTwitterBatch {
 	seq: number;
 	fetchedAt: string;
 	snapshotId: string;
-	feed: "for_you";
+	feed: "for_you" | "following";
 	requestedCount: number;
 	receivedCount: number;
 	tweets: PersistedTwitterTweet[];
 	raw?: unknown;
+}
+
+type TimelineFeed = "for_you" | "following";
+
+interface TimelineFetchResult {
+	feed: TimelineFeed;
+	payload: unknown;
+	fetchedTweets: PersistedTwitterTweet[];
+}
+
+function oppositeTimelineFeed(feed: TimelineFeed): TimelineFeed {
+	return feed === "for_you" ? "following" : "for_you";
 }
 
 export interface TwitterCollectorHandle {
@@ -565,6 +577,7 @@ class TwitterCollector implements TwitterCollectorHandle {
 	private closed = false;
 	private readonly archiveWindowDays = 2;
 	private readonly tweetFullCache = new Map<string, Record<string, unknown>>();
+	private preferredTimelineFeed: TimelineFeed = "for_you";
 
 	descriptor: ServiceDescriptor;
 
@@ -581,6 +594,7 @@ class TwitterCollector implements TwitterCollectorHandle {
 			capabilities: {
 				mode: "leader_local",
 				feed: "for_you",
+				fallbackFeed: "following",
 				pullCount: this.config.pullCount,
 				pullIntervalMinutes: this.config.pullIntervalMinutes,
 				outputPath: this.config.outputPath,
@@ -645,8 +659,9 @@ class TwitterCollector implements TwitterCollectorHandle {
 
 		try {
 			const archiveIndex = await this.loadRecentArchiveTweetIndex();
-			const payload = await this.fetchForYouTimeline();
-			const fetchedTweets = parseTweetsFromPayload(payload, this.config.pullCount);
+			const timeline = await this.fetchTimelineWithFallback();
+			const payload = timeline.payload;
+			const fetchedTweets = timeline.fetchedTweets;
 			const { tweets, skippedArchivedCount, keptForBackfillCount } = this.filterTweetsByArchiveIndex(
 				fetchedTweets,
 				archiveIndex,
@@ -662,6 +677,7 @@ class TwitterCollector implements TwitterCollectorHandle {
 				});
 				logClusterEvent("info", "twitter_collector_pull_dedup_skipped_all", this.lifecycleContext, {
 					trigger,
+					feed: timeline.feed,
 					requestedCount: this.config.pullCount,
 					fetchedCount: fetchedTweets.length,
 					skippedArchivedCount,
@@ -678,7 +694,7 @@ class TwitterCollector implements TwitterCollectorHandle {
 				seq,
 				fetchedAt,
 				snapshotId: `${fetchedAt}-${seq}`,
-				feed: "for_you",
+				feed: timeline.feed,
 				requestedCount: this.config.pullCount,
 				receivedCount: tweets.length,
 				tweets,
@@ -697,6 +713,7 @@ class TwitterCollector implements TwitterCollectorHandle {
 
 			logClusterEvent("info", "twitter_collector_pull_success", this.lifecycleContext, {
 				trigger,
+				feed: timeline.feed,
 				requestedCount: this.config.pullCount,
 				fetchedCount: fetchedTweets.length,
 				receivedCount: tweets.length,
@@ -1008,10 +1025,56 @@ class TwitterCollector implements TwitterCollectorHandle {
 		return null;
 	}
 
-	private async fetchForYouTimeline(): Promise<unknown> {
+	private async fetchTimelineWithFallback(): Promise<TimelineFetchResult> {
+		const currentFeed = this.preferredTimelineFeed;
+		const currentPayload = await this.fetchHomeTimeline(currentFeed === "following");
+		const currentTweets = parseTweetsFromPayload(currentPayload, this.config.pullCount);
+		if (currentTweets.length > 0) {
+			return {
+				feed: currentFeed,
+				payload: currentPayload,
+				fetchedTweets: currentTweets,
+			};
+		}
+
+		const nextFeed = oppositeTimelineFeed(currentFeed);
+		logClusterEvent("info", "twitter_collector_feed_empty_switch", this.lifecycleContext, {
+			fromFeed: currentFeed,
+			toFeed: nextFeed,
+			requestedCount: this.config.pullCount,
+			fetchedCount: currentTweets.length,
+		});
+
+		try {
+			const nextPayload = await this.fetchHomeTimeline(nextFeed === "following");
+			const nextTweets = parseTweetsFromPayload(nextPayload, this.config.pullCount);
+			this.preferredTimelineFeed = nextFeed;
+			return {
+				feed: nextFeed,
+				payload: nextPayload,
+				fetchedTweets: nextTweets,
+			};
+		} catch (error) {
+			logClusterEvent("warn", "twitter_collector_feed_switch_failed", this.lifecycleContext, {
+				fromFeed: currentFeed,
+				toFeed: nextFeed,
+				error: error instanceof Error ? error.message : String(error),
+				requestedCount: this.config.pullCount,
+				action: "keep_current_feed_empty_batch",
+			});
+			return {
+				feed: currentFeed,
+				payload: currentPayload,
+				fetchedTweets: currentTweets,
+			};
+		}
+	}
+
+	private async fetchHomeTimeline(useFollowingFeed: boolean): Promise<unknown> {
 		const args = [
 			...this.birdGlobalArgs,
 			"home",
+			...(useFollowingFeed ? ["--following"] : []),
 			"--count",
 			String(this.config.pullCount),
 			"--json",
@@ -1019,19 +1082,19 @@ class TwitterCollector implements TwitterCollectorHandle {
 		];
 		const result = await runBirdCommand(args, this.config.commandTimeoutMs);
 		if (result.code !== 0) {
-			throw new Error(formatBirdFailure("bird home failed", result));
+			throw new Error(formatBirdFailure(`bird home${useFollowingFeed ? " --following" : ""} failed`, result));
 		}
 
 		const stdout = result.stdout.trim();
 		if (!stdout) {
-			throw new Error("bird home returned empty output");
+			throw new Error(`bird home${useFollowingFeed ? " --following" : ""} returned empty output`);
 		}
 
 		try {
 			return JSON.parse(stdout) as unknown;
 		} catch (error) {
 			throw new Error(
-				`bird home returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+				`bird home${useFollowingFeed ? " --following" : ""} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}
