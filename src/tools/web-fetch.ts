@@ -16,16 +16,24 @@ const DESCRIPTION = `Fetch content from a specified URL and return its contents 
 - The URL must be a fully-formed, valid URL.
 - This tool is read-only and will not work for requests intended to have side effects.
 - This fetch tries to return live results but may return previously cached content.
-- This fetch runs from an isolated server - hosts like localhost or private IPs will not work.
+- This fetch runs in the current runtime network context, and blocks localhost/private IP targets for safety.
 - Authentication is not supported, and an error will be returned if the URL requires authentication.
 - If the URL is returning a non-200 status code, e.g. 404, the tool will not return the content and will instead return an error message.
-- The tool prefers markdown content negotiation via \`Accept: text/markdown\` when supported by the target site, and falls back to HTML-to-markdown conversion.
+- The tool prefers readable text output and converts HTML responses into markdown-like text when needed.
 - If present, metadata like \`x-markdown-tokens\` and \`content-signal\` may be returned in tool details.`;
 
 const REQUEST_TIMEOUT_MS = 20_000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const ACCEPT_MARKDOWN_HEADER =
-	"text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.8, application/json;q=0.7, text/plain;q=0.6, */*;q=0.5";
+const DEFAULT_BROWSER_ACCEPT =
+	"text/markdown, text/html;q=0.95, application/xhtml+xml;q=0.9, application/xml;q=0.85, image/avif,image/webp,*/*;q=0.8";
+const DEFAULT_BROWSER_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
+const DEFAULT_BROWSER_USER_AGENT =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
+const WECHAT_MOBILE_ACCEPT =
+	"text/markdown, text/html;q=0.95, application/xhtml+xml;q=0.9, application/xml;q=0.85,*/*;q=0.8";
+const WECHAT_MOBILE_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9";
+const WECHAT_MOBILE_USER_AGENT =
+	"Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/7.0.20(0x17001422) NetType/WIFI Language/zh_CN";
 
 const webFetchSchema = Type.Object({
 	url: Type.String({
@@ -38,6 +46,7 @@ type WebFetchInput = Static<typeof webFetchSchema>;
 interface CachedFetchEntry {
 	url: string;
 	finalUrl: string;
+	requestProfile: string;
 	status: number;
 	contentType: string;
 	markdownNegotiated: boolean;
@@ -51,11 +60,13 @@ interface CachedFetchEntry {
 interface WebFetchDetails {
 	url: string;
 	final_url?: string;
+	request_profile?: string;
 	status?: number;
 	content_type?: string;
 	markdown_negotiated?: boolean;
 	markdown_tokens?: number;
 	content_signal?: string;
+	blocked_by?: string;
 	from_cache?: boolean;
 	fetched_at?: string;
 	bytes_received?: number;
@@ -64,6 +75,13 @@ interface WebFetchDetails {
 }
 
 const responseCache = new Map<string, CachedFetchEntry>();
+
+interface FetchProfile {
+	name: "browser_default" | "wechat_mobile";
+	accept: string;
+	acceptLanguage: string;
+	userAgent: string;
+}
 
 function normalizeUrlInput(input: string): string {
 	return input.trim();
@@ -247,6 +265,24 @@ function normalizeFetchedBody(rawText: string, contentType: string): { body: str
 	};
 }
 
+function getFetchProfile(url: URL): FetchProfile {
+	if (url.hostname.toLowerCase() === "mp.weixin.qq.com") {
+		return {
+			name: "wechat_mobile",
+			accept: WECHAT_MOBILE_ACCEPT,
+			acceptLanguage: WECHAT_MOBILE_ACCEPT_LANGUAGE,
+			userAgent: WECHAT_MOBILE_USER_AGENT,
+		};
+	}
+
+	return {
+		name: "browser_default",
+		accept: DEFAULT_BROWSER_ACCEPT,
+		acceptLanguage: DEFAULT_BROWSER_ACCEPT_LANGUAGE,
+		userAgent: DEFAULT_BROWSER_USER_AGENT,
+	};
+}
+
 function formatFetchedOutput(entry: CachedFetchEntry): string {
 	const lines: string[] = [];
 
@@ -254,6 +290,7 @@ function formatFetchedOutput(entry: CachedFetchEntry): string {
 	if (entry.url !== entry.finalUrl) {
 		lines.push(`Requested URL: ${entry.url}`);
 	}
+	lines.push(`Request profile: ${entry.requestProfile}`);
 	lines.push(`Fetched at: ${entry.fetchedAtIso}`);
 	lines.push(`Content-Type: ${entry.contentType || "unknown"}`);
 	lines.push(`Markdown negotiated: ${entry.markdownNegotiated ? "yes" : "no"}`);
@@ -269,6 +306,38 @@ function formatFetchedOutput(entry: CachedFetchEntry): string {
 	return lines.join("\n");
 }
 
+function isBlockedInterstital(content: {
+	finalUrl: string;
+	contentType: string;
+	rawText: string;
+}): { blockedBy: string; message: string } | undefined {
+	const finalUrlLower = content.finalUrl.toLowerCase();
+	const textLower = content.rawText.toLowerCase();
+
+	const looksLikeWechatCaptcha =
+		finalUrlLower.includes("wappoc_appmsgcaptcha") ||
+		textLower.includes("wappoc_appmsgcaptcha") ||
+		(content.contentType.includes("text/html") && textLower.includes("环境异常") && textLower.includes("去验证"));
+
+	if (looksLikeWechatCaptcha) {
+		return {
+			blockedBy: "wechat_risk_control",
+			message:
+				"WebFetch blocked by WeChat risk-control/captcha interstitial. Try local fetch with WeChat mobile UA or provide article text manually.",
+		};
+	}
+
+	return undefined;
+}
+
+function isBlockedCachedEntry(entry: CachedFetchEntry): boolean {
+	return isBlockedInterstital({
+		finalUrl: entry.finalUrl,
+		contentType: entry.contentType,
+		rawText: entry.markdownContent,
+	}) !== undefined;
+}
+
 function getCachedEntry(url: string): CachedFetchEntry | undefined {
 	const cached = responseCache.get(url);
 	if (!cached) return undefined;
@@ -276,14 +345,23 @@ function getCachedEntry(url: string): CachedFetchEntry | undefined {
 		responseCache.delete(url);
 		return undefined;
 	}
+	if (isBlockedCachedEntry(cached)) {
+		responseCache.delete(url);
+		return undefined;
+	}
 	return cached;
 }
 
-function formatErrorResult(url: string, error: string): { content: { type: "text"; text: string }[]; details: WebFetchDetails } {
+function formatErrorResult(
+	url: string,
+	error: string,
+	extraDetails?: Partial<WebFetchDetails>,
+): { content: { type: "text"; text: string }[]; details: WebFetchDetails } {
 	return {
 		content: [{ type: "text", text: error }],
 		details: {
 			url,
+			...extraDetails,
 			error,
 		},
 	};
@@ -349,6 +427,7 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 					details: {
 						url: normalizedUrl,
 						final_url: cached.finalUrl,
+						request_profile: cached.requestProfile,
 						status: cached.status,
 						content_type: cached.contentType,
 						markdown_negotiated: cached.markdownNegotiated,
@@ -366,6 +445,7 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 			const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 			const onAbort = () => controller.abort();
 			signal?.addEventListener("abort", onAbort, { once: true });
+			const fetchProfile = getFetchProfile(parsedUrl);
 
 			try {
 				const response = await fetch(normalizedUrl, {
@@ -373,8 +453,9 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 					redirect: "follow",
 					signal: controller.signal,
 					headers: {
-						Accept: ACCEPT_MARKDOWN_HEADER,
-						"User-Agent": "mono-pilot-web-fetch/0.1",
+						Accept: fetchProfile.accept,
+						"Accept-Language": fetchProfile.acceptLanguage,
+						"User-Agent": fetchProfile.userAgent,
 					},
 				});
 
@@ -403,6 +484,24 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 				const markdownTokens = parsePositiveInt(response.headers.get("x-markdown-tokens"));
 				const contentSignal = response.headers.get("content-signal") ?? undefined;
 				const rawText = await response.text();
+				const blocked = isBlockedInterstital({
+					finalUrl: finalParsed.toString(),
+					contentType,
+					rawText,
+				});
+				if (blocked) {
+					return formatErrorResult(normalizedUrl, blocked.message, {
+						final_url: finalParsed.toString(),
+						request_profile: fetchProfile.name,
+						status: response.status,
+						content_type: contentType,
+						markdown_negotiated: markdownNegotiated,
+						markdown_tokens: markdownTokens,
+						content_signal: contentSignal,
+						blocked_by: blocked.blockedBy,
+						bytes_received: Buffer.byteLength(rawText, "utf-8"),
+					});
+				}
 				const normalizedBody = normalizeFetchedBody(rawText, contentType);
 				const markdownBody = normalizedBody.title
 					? `# ${normalizedBody.title}\n\n${normalizedBody.body}`.trim()
@@ -412,6 +511,7 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 				const cacheEntry: CachedFetchEntry = {
 					url: normalizedUrl,
 					finalUrl: finalParsed.toString(),
+					requestProfile: fetchProfile.name,
 					status: response.status,
 					contentType,
 					markdownNegotiated,
@@ -435,6 +535,7 @@ export default function webFetchExtension(pi: ExtensionAPI) {
 					details: {
 						url: normalizedUrl,
 						final_url: cacheEntry.finalUrl,
+						request_profile: cacheEntry.requestProfile,
 						status: cacheEntry.status,
 						content_type: cacheEntry.contentType,
 						markdown_negotiated: cacheEntry.markdownNegotiated,
