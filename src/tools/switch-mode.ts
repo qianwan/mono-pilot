@@ -1,8 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { isAbsolute, resolve } from "node:path";
-import process from "node:process";
 import {
 	createModeStateData,
 	deriveInitialModeState,
@@ -11,8 +9,7 @@ import {
 	parseModeStateEntry,
 	type ModeId,
 } from "../extensions/mode-runtime.js";
-
-const MODE_STATUS_KEY = "mono-pilot-mode";
+import { updateMonoPilotFooterStatuses } from "../extensions/footer.js";
 
 const DESCRIPTION = `Switch the interaction mode to better match the current task. Each mode is optimized for a specific type of work.
 
@@ -104,249 +101,6 @@ function normalizePlanFilePath(value: string | undefined): string | undefined {
 	return isAbsolute(trimmed) ? trimmed : resolve(process.cwd(), trimmed);
 }
 
-interface FooterModelState {
-	modelId: string;
-	provider?: string;
-	reasoning: boolean;
-	thinkingLevel: string;
-}
-
-function sanitizeStatusText(text: string): string {
-	return text
-		.replace(/[\r\n\t]/g, " ")
-		.replace(/ +/g, " ")
-		.trim();
-}
-
-function stripAnsi(value: string): string {
-	return value.replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
-}
-
-function deriveFooterModelState(entries: unknown[], fallbackModel: ExtensionContext["model"]): FooterModelState {
-	let modelId = fallbackModel?.id || "no-model";
-	let provider = fallbackModel?.provider;
-	let reasoning = fallbackModel?.reasoning === true;
-	let thinkingLevel = "off";
-
-	for (const entry of entries) {
-		if (typeof entry !== "object" || entry === null) continue;
-		const record = entry as {
-			type?: unknown;
-			modelId?: unknown;
-			provider?: unknown;
-			thinkingLevel?: unknown;
-		};
-		if (record.type === "model_change") {
-			if (typeof record.modelId === "string" && record.modelId.length > 0) {
-				modelId = record.modelId;
-			}
-			if (typeof record.provider === "string" && record.provider.length > 0) {
-				provider = record.provider;
-			}
-			reasoning = false;
-		}
-		if (record.type === "thinking_level_change" && typeof record.thinkingLevel === "string") {
-			thinkingLevel = record.thinkingLevel;
-			reasoning = true;
-		}
-	}
-
-	return {
-		modelId,
-		provider,
-		reasoning,
-		thinkingLevel,
-	};
-}
-
-function installModeFooter(ctx: ExtensionContext): void {
-	if (!ctx.hasUI) return;
-
-	ctx.ui.setFooter((tui, theme, footerData) => {
-		const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
-
-		return {
-			dispose: unsubscribe,
-			invalidate() {},
-			render(width: number): string[] {
-				let totalInput = 0;
-				let totalOutput = 0;
-				let totalCacheRead = 0;
-				let totalCacheWrite = 0;
-				let totalCost = 0;
-
-				const entries = ctx.sessionManager.getEntries();
-				for (const entry of entries) {
-					if (typeof entry !== "object" || entry === null) continue;
-					const record = entry as {
-						type?: unknown;
-						message?: {
-							role?: unknown;
-							usage?: {
-								input?: unknown;
-								output?: unknown;
-								cacheRead?: unknown;
-								cacheWrite?: unknown;
-								cost?: {
-									total?: unknown;
-								};
-							};
-						};
-					};
-					if (record.type !== "message" || record.message?.role !== "assistant") continue;
-
-					totalInput += typeof record.message.usage?.input === "number" ? record.message.usage.input : 0;
-					totalOutput += typeof record.message.usage?.output === "number" ? record.message.usage.output : 0;
-					totalCacheRead += typeof record.message.usage?.cacheRead === "number" ? record.message.usage.cacheRead : 0;
-					totalCacheWrite += typeof record.message.usage?.cacheWrite === "number" ? record.message.usage.cacheWrite : 0;
-					totalCost +=
-						typeof record.message.usage?.cost?.total === "number" ? record.message.usage.cost.total : 0;
-				}
-
-				let pwd = process.cwd();
-				const home = process.env.HOME || process.env.USERPROFILE;
-				if (home && pwd.startsWith(home)) {
-					pwd = `~${pwd.slice(home.length)}`;
-				}
-
-				const branch = footerData.getGitBranch();
-				if (branch) {
-					pwd = `${pwd} (${branch})`;
-				}
-
-				const sessionName = ctx.sessionManager.getSessionName();
-				if (sessionName) {
-					pwd = `${pwd} • ${sessionName}`;
-				}
-
-				const extensionStatuses = footerData.getExtensionStatuses();
-				const modeStatus = extensionStatuses.get(MODE_STATUS_KEY);
-				const locationLine = truncateToWidth(
-					`${theme.fg("dim", pwd)}${modeStatus ? ` ${sanitizeStatusText(modeStatus)}` : ""}`,
-					width,
-					theme.fg("dim", "..."),
-				);
-
-				const contextUsage = ctx.getContextUsage();
-				const contextWindow = contextUsage?.contextWindow ?? 0;
-				const contextPercentValue = contextUsage?.percent ?? 0;
-				const contextPercent =
-					contextUsage?.percent !== null && contextUsage?.percent !== undefined
-						? contextUsage.percent.toFixed(1)
-						: "?";
-
-				const statsParts = [];
-				if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
-				if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
-				if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
-				if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
-
-				const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
-				if (totalCost || usingSubscription) {
-					statsParts.push(`$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`);
-				}
-
-				const autoIndicator = " (auto)";
-				const contextPercentDisplay =
-					contextPercent === "?"
-						? `?/${formatTokens(contextWindow)}${autoIndicator}`
-						: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
-
-				let contextPercentStr: string;
-				if (contextPercentValue > 90) {
-					contextPercentStr = theme.fg("error", contextPercentDisplay);
-				} else if (contextPercentValue > 70) {
-					contextPercentStr = theme.fg("warning", contextPercentDisplay);
-				} else {
-					contextPercentStr = contextPercentDisplay;
-				}
-				statsParts.push(contextPercentStr);
-
-				let statsLeft = statsParts.join(" ");
-				let statsLeftWidth = visibleWidth(statsLeft);
-				if (statsLeftWidth > width) {
-					const plainStatsLeft = stripAnsi(statsLeft);
-					statsLeft = `${plainStatsLeft.substring(0, width - 3)}...`;
-					statsLeftWidth = visibleWidth(statsLeft);
-				}
-
-				const modelState = deriveFooterModelState(entries, ctx.model);
-				let rightSideWithoutProvider = modelState.modelId;
-				if (modelState.reasoning) {
-					rightSideWithoutProvider =
-						modelState.thinkingLevel === "off"
-							? `${modelState.modelId} • thinking off`
-							: `${modelState.modelId} • ${modelState.thinkingLevel}`;
-				}
-
-				let rightSide = rightSideWithoutProvider;
-				if (footerData.getAvailableProviderCount() > 1 && modelState.provider) {
-					rightSide = `(${modelState.provider}) ${rightSideWithoutProvider}`;
-					if (statsLeftWidth + 2 + visibleWidth(rightSide) > width) {
-						rightSide = rightSideWithoutProvider;
-					}
-				}
-
-				const rightSideWidth = visibleWidth(rightSide);
-				const totalNeeded = statsLeftWidth + 2 + rightSideWidth;
-
-				let statsLine: string;
-				if (totalNeeded <= width) {
-					const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
-					statsLine = statsLeft + padding + rightSide;
-				} else {
-					const availableForRight = width - statsLeftWidth - 2;
-					if (availableForRight > 3) {
-						const plainRightSide = stripAnsi(rightSide);
-						const truncatedPlain = plainRightSide.substring(0, availableForRight);
-						const padding = " ".repeat(width - statsLeftWidth - truncatedPlain.length);
-						statsLine = statsLeft + padding + truncatedPlain;
-					} else {
-						statsLine = statsLeft;
-					}
-				}
-
-				const dimStatsLeft = theme.fg("dim", statsLeft);
-				const remainder = statsLine.slice(statsLeft.length);
-				const dimRemainder = theme.fg("dim", remainder);
-				const lines = [locationLine, dimStatsLeft + dimRemainder];
-
-				const otherStatuses = Array.from(extensionStatuses.entries())
-					.filter(([key]) => key !== MODE_STATUS_KEY)
-					.sort(([a], [b]) => a.localeCompare(b))
-					.map(([, text]) => sanitizeStatusText(text));
-
-				if (otherStatuses.length > 0) {
-					const statusLine = otherStatuses.join(" ");
-					lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
-				}
-
-				return lines;
-			},
-		};
-	});
-}
-
-function updateModeStatus(ctx: ExtensionContext): void {
-	if (!ctx.hasUI) return;
-	const { activeMode } = modeRuntimeStore.getSnapshot();
-	const statusText =
-		activeMode === "plan"
-			? ctx.ui.theme.fg("warning", "mode:plan")
-			: activeMode === "ask"
-				? ctx.ui.theme.fg("borderAccent", "mode:ask")
-				: ctx.ui.theme.fg("muted", "mode:agent");
-	ctx.ui.setStatus(MODE_STATUS_KEY, statusText);
-}
-
 function persistModeState(pi: ExtensionAPI): void {
 	pi.appendEntry(MODE_STATE_ENTRY_TYPE, createModeStateData(modeRuntimeStore.getSnapshot()));
 }
@@ -362,7 +116,7 @@ function setMode(
 		persistModeState(pi);
 	}
 	if (ctx) {
-		updateModeStatus(ctx);
+		updateMonoPilotFooterStatuses(ctx);
 	}
 	return { changed };
 }
@@ -370,7 +124,7 @@ function setMode(
 function togglePlanMode(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	const { snapshot } = modeRuntimeStore.toggleMode();
 	persistModeState(pi);
-	updateModeStatus(ctx);
+	updateMonoPilotFooterStatuses(ctx);
 	if (ctx.hasUI) {
 		const label =
 			snapshot.activeMode === "plan" ? "Plan" : snapshot.activeMode === "ask" ? "Ask" : "Agent";
@@ -409,8 +163,7 @@ export default function switchModeExtension(pi: ExtensionAPI) {
 			persistModeState(pi);
 		}
 
-		installModeFooter(ctx);
-		updateModeStatus(ctx);
+		updateMonoPilotFooterStatuses(ctx);
 	});
 
 	// System prompt injection is handled centrally by system-prompt extension.

@@ -21,6 +21,7 @@ import switchModeExtension from "../tools/switch-mode.js";
 import exitPlanModeExtension from "../tools/exit-plan-mode.js";
 // import applyPatchExtension from "../tools/apply-patch.js";
 import codexApplyPatchExtension from "../tools/codex-apply-patch.js";
+import footerExtension from "./footer.js";
 import userMessageExtension from "./user-message.js";
 import systemPromptExtension from "./system-prompt.js";
 import sessionHintsExtension from "./session-hints.js";
@@ -61,6 +62,7 @@ const toolExtensions: ExtensionFactory[] = [
 	listMcpToolsExtension,
 	callMcpToolExtension,
 	switchModeExtension,
+	footerExtension,
 	exitPlanModeExtension,
 	// applyPatchExtension,
 	codexApplyPatchExtension,
