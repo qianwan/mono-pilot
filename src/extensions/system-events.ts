@@ -446,11 +446,15 @@ function showOverlay(
 									? "SYSTEM WARNING"
 									: "SYSTEM INFO"
 						} [${source}]`;
-						const titleLabelWidth = Math.max(1, rowInnerWidth - visibleWidth(OVERLAY_CLOSE_MARK) - 1);
+						const titleRowInnerWidth = rowInnerWidth + 1;
+						const titleLabelWidth = Math.max(
+							1,
+							titleRowInnerWidth - visibleWidth(OVERLAY_CLOSE_MARK) - 1,
+						);
 						const title = `${padRight(baseTitle, titleLabelWidth)} ${OVERLAY_CLOSE_MARK}`;
 						const rows: string[] = [
 							`┌${"─".repeat(rowWidth)}┐`,
-							`│ ${padRight(title, rowInnerWidth)}  │`,
+							`│ ${padRight(title, titleRowInnerWidth)} │`,
 							`├${"─".repeat(rowWidth)}┤`,
 						];
 
