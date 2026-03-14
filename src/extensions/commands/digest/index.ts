@@ -78,16 +78,16 @@ const CATEGORY_SET = new Set<string>(CATEGORIES);
 const FOCUS_CATEGORY_SET = new Set<string>(CATEGORIES.filter((category) => category !== IRRELEVANT_CATEGORY));
 const DEFAULT_DEBUG_SAMPLE_SIZE = 4;
 const CLASSIFICATION_TEXT_MAX_CHARS = 1024;
-const DIGEST_DRAFT_PATH = join(homedir(), ".mono-pilot", "twitter", "draft.md");
-const DIGEST_DRAFT_DEBUG_PATH = join(homedir(), ".mono-pilot", "twitter", "draft-debug.md");
+const DIGEST_OUTPUT_DIR = join(homedir(), ".mono-pilot", "twitter");
 const ENABLE_CLASSIFICATION_BRANCH = true;
+const DIGEST_DATE_ALL = "all";
 let digestBackfillRunning = false;
 let digestDraftRunning = false;
 const CLASSIFY_COOPERATIVE_YIELD_EVERY_LINES = 20;
 
 const USAGE = [
 	"Usage:",
-	"  /digest draft [--date YYYY-MM-DD] [--file <path>]",
+	"  /digest draft [--date YYYY-MM-DD|all] [--file <path>]",
 	"                   [--concurrency <N>] [--sample <N>]",
 	"                   [--provider <name>] [--model <id>]",
 	"  /digest backfill [--date YYYY-MM-DD] [--file <path>]",
@@ -206,6 +206,11 @@ function parseArgs(raw: string): ParsedArgs {
 		return { subcommand: "draft", error: `Unknown argument: ${token}.\n${USAGE}` };
 	}
 
+	if (parsed.date) {
+		const normalizedDate = parsed.date.trim();
+		parsed.date = normalizedDate.toLowerCase() === DIGEST_DATE_ALL ? DIGEST_DATE_ALL : normalizedDate;
+	}
+
 	return parsed;
 }
 
@@ -277,6 +282,20 @@ function buildDailyArchivePath(baseOutputPath: string, dateStamp: string): strin
 	return join(parsed.dir, `${name}.${dateStamp}${ext}`);
 }
 
+function extractDateStampFromPath(filePath: string): string | undefined {
+	const name = parse(filePath).name;
+	const lastToken = name.split(".").at(-1);
+	return isDateStamp(lastToken) ? lastToken : undefined;
+}
+
+function buildDigestDraftPath(dateStamp: string): string {
+	return join(DIGEST_OUTPUT_DIR, `draft.${dateStamp}.md`);
+}
+
+function buildDigestDraftDebugPath(dateStamp: string): string {
+	return join(DIGEST_OUTPUT_DIR, `draft-debug.${dateStamp}.md`);
+}
+
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -313,10 +332,16 @@ async function pickArchiveDateWithUi(
 		return todayDate;
 	}
 
-	const options = archiveDates.map((date) => (date === todayDate ? `${date} (today)` : date));
+	const options = [
+		`${DIGEST_DATE_ALL} (all archives)`,
+		...archiveDates.map((date) => (date === todayDate ? `${date} (today)` : date)),
+	];
 	const selected = await ctx.ui.select("Select digest archive date", options);
 	if (!selected) {
 		return todayDate;
+	}
+	if (selected.startsWith(DIGEST_DATE_ALL)) {
+		return DIGEST_DATE_ALL;
 	}
 
 	return selected.slice(0, 10);
@@ -344,6 +369,65 @@ function extractAuthorName(tweet: Record<string, unknown> | null): string | null
 	return readString(author.name) ?? readString(author.screen_name);
 }
 
+function extractCreatedAt(tweet: Record<string, unknown> | null): string | null {
+	if (!tweet) {
+		return null;
+	}
+
+	return readString(tweet.createdAt);
+}
+
+function parseCreatedAtMs(createdAt: string | null): number | null {
+	if (!createdAt) {
+		return null;
+	}
+
+	const time = Date.parse(createdAt);
+	return Number.isFinite(time) ? time : null;
+}
+
+function compareCreatedAtAsc(a: string | null, b: string | null): number {
+	const aMs = parseCreatedAtMs(a);
+	const bMs = parseCreatedAtMs(b);
+
+	if (aMs !== null && bMs !== null) {
+		return aMs - bMs;
+	}
+	if (aMs !== null) {
+		return -1;
+	}
+	if (bMs !== null) {
+		return 1;
+	}
+	return 0;
+}
+
+function parseIndexNumber(indexId: string, prefix: string): number | null {
+	if (!indexId.startsWith(prefix)) {
+		return null;
+	}
+
+	const numberPart = Number(indexId.slice(prefix.length));
+	return Number.isInteger(numberPart) && numberPart > 0 ? numberPart : null;
+}
+
+function sortIndexIds(indexIds: string[], prefix: string): string[] {
+	return [...indexIds].sort((a, b) => {
+		const aNum = parseIndexNumber(a, prefix);
+		const bNum = parseIndexNumber(b, prefix);
+		if (aNum !== null && bNum !== null) {
+			return aNum - bNum;
+		}
+		if (aNum !== null) {
+			return -1;
+		}
+		if (bNum !== null) {
+			return 1;
+		}
+		return a.localeCompare(b);
+	});
+}
+
 function buildClassificationPayload(tweet: Record<string, unknown>): Record<string, unknown> {
 	const tweetFull = isRecord(tweet.tweetFull) ? tweet.tweetFull : null;
 	const quoted = isRecord(tweet.quotedTweet) ? tweet.quotedTweet : null;
@@ -360,6 +444,7 @@ function buildClassificationPayload(tweet: Record<string, unknown>): Record<stri
 	const truncatedTweetText = truncateForClassification(tweetText);
 	const truncatedTweetFullText = truncateForClassification(tweetFullText);
 	const tweetMedia = Array.isArray(tweetFull?.media) ? tweetFull.media.length : 0;
+	const tweetCreatedAt = extractCreatedAt(tweet) ?? extractCreatedAt(tweetFull);
 
 	const quotedText = quoted ? readString(quoted.text) : null;
 	const quotedFullText = pickLongerText(
@@ -372,12 +457,14 @@ function buildClassificationPayload(tweet: Record<string, unknown>): Record<stri
 	const truncatedQuotedText = truncateForClassification(quotedText);
 	const truncatedQuotedFullText = truncateForClassification(quotedFullText);
 	const quotedMedia = Array.isArray(quotedFull?.media) ? quotedFull.media.length : 0;
+	const quotedCreatedAt = extractCreatedAt(quoted) ?? extractCreatedAt(quotedFull);
 
 	return {
 		tweet: {
 			id: extractTweetId(tweet),
 			text: truncatedTweetText,
 			fullText: truncatedTweetFullText,
+			createdAt: tweetCreatedAt,
 			mediaCount: tweetMedia,
 		},
 		quotedTweet: quoted
@@ -385,6 +472,7 @@ function buildClassificationPayload(tweet: Record<string, unknown>): Record<stri
 					id: extractTweetId(quoted),
 					text: truncatedQuotedText,
 					fullText: truncatedQuotedFullText,
+					createdAt: quotedCreatedAt,
 					mediaCount: quotedMedia,
 			  }
 			: null,
@@ -415,6 +503,8 @@ function buildScratchPayload(tweet: Record<string, unknown>): Record<string, unk
 	);
 	const tweetAuthorName = extractAuthorName(tweet) ?? extractAuthorName(tweetFull);
 	const quotedAuthorName = extractAuthorName(quotedFull) ?? extractAuthorName(quoted);
+	const tweetCreatedAt = extractCreatedAt(tweet) ?? extractCreatedAt(tweetFull);
+	const quotedCreatedAt = extractCreatedAt(quoted) ?? extractCreatedAt(quotedFull);
 
 	return {
 		tweet: {
@@ -422,6 +512,7 @@ function buildScratchPayload(tweet: Record<string, unknown>): Record<string, unk
 			text: tweetText,
 			fullText: tweetFullText,
 			authorName: tweetAuthorName,
+			createdAt: tweetCreatedAt,
 		},
 		quotedTweet: quoted
 			? {
@@ -429,6 +520,7 @@ function buildScratchPayload(tweet: Record<string, unknown>): Record<string, unk
 					text: quotedText,
 					fullText: quotedFullText,
 					authorName: quotedAuthorName,
+					createdAt: quotedCreatedAt,
 			  }
 			: null,
 	};
@@ -756,25 +848,19 @@ function pickRandomItems<T>(items: T[], count: number): T[] {
 	return shuffled.slice(0, count);
 }
 
-type ScratchQuotedNode = {
+type ScratchNode = {
 	indexId: string;
 	tweetId: string | null;
 	authorName: string | null;
-	text: string;
-	referencedBy: string[];
-	sourceKinds: string[];
-};
-
-type ScratchMainNode = {
-	indexId: string;
-	tweetId: string | null;
-	authorName: string | null;
+	createdAt: string | null;
 	text: string;
 	referenceIndexIds: string[];
-	sourceRef: string;
-	category: string;
-	confidence: number;
-	reason: string;
+	referencedBy: string[];
+	sourceKinds: string[];
+	sourceRef: string | null;
+	category: string | null;
+	confidence: number | null;
+	reason: string | null;
 };
 
 type ScratchShortLinkMapping = {
@@ -814,6 +900,26 @@ function extractStatusIdFromUrl(url: string | null): string | null {
 	}
 
 	return null;
+}
+
+function isTweetMediaPermalinkUrl(url: string | null): boolean {
+	if (!url) {
+		return false;
+	}
+
+	const normalized = url.trim();
+	if (!normalized) {
+		return false;
+	}
+
+	return (
+		/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[A-Za-z0-9_]+\/status\/\d+\/(?:video|photo)\/\d+(?:[?#].*)?$/i.test(
+			normalized,
+		) ||
+		/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/i\/web\/status\/\d+\/(?:video|photo)\/\d+(?:[?#].*)?$/i.test(
+			normalized,
+		)
+	);
 }
 
 function toScratchShortLinkMappings(value: unknown): ScratchShortLinkMapping[] {
@@ -882,10 +988,10 @@ function buildClassificationScratchMarkdown(
 	results: ClassificationResult[],
 	sourceFile: string,
 ): { markdown: string; keptCount: number; droppedCount: number } {
-	const quotedNodesByKey = new Map<string, ScratchQuotedNode>();
-	const quotedNodesInOrder: ScratchQuotedNode[] = [];
-	const mainNodes: ScratchMainNode[] = [];
-	let nextQuotedIndex = 1;
+	const referencedNodesByKey = new Map<string, ScratchNode>();
+	const referencedNodesInOrder: ScratchNode[] = [];
+	const mainNodes: ScratchNode[] = [];
+	let nextReferencedIndex = 1;
 	let keptCount = 0;
 
 	for (let index = 0; index < items.length; index += 1) {
@@ -900,9 +1006,10 @@ function buildClassificationScratchMarkdown(
 		const tweetPart = isRecord(payload.tweet) ? payload.tweet : null;
 		const quotedPart = isRecord(payload.quotedTweet) ? payload.quotedTweet : null;
 
-		const mainIndexId = `T${keptCount}`;
+		const mainIndexId = `M${keptCount}`;
 		const mainTweetId = tweetPart ? readString(tweetPart.id) : null;
 		const mainAuthorName = tweetPart ? readString(tweetPart.authorName) : null;
+		const mainCreatedAt = tweetPart ? readString(tweetPart.createdAt) : null;
 		const mainShortLinkMappings = toScratchShortLinkMappings(item.tweet.shortLinkMappings);
 		const mainText = rewriteShortLinksForScratch(
 			pickPayloadPrimaryText(tweetPart),
@@ -910,10 +1017,25 @@ function buildClassificationScratchMarkdown(
 			mainTweetId,
 		);
 
-		const referenceIndexIds: string[] = [];
+		const mainNode: ScratchNode = {
+			indexId: mainIndexId,
+			tweetId: mainTweetId,
+			authorName: mainAuthorName,
+			createdAt: mainCreatedAt,
+			text: mainText,
+			referenceIndexIds: [],
+			referencedBy: [],
+			sourceKinds: ["main"],
+			sourceRef: `${parse(item.archiveFile).base}:line=${item.lineNumber},tweetIndex=${item.tweetIndex}`,
+			category: result.category,
+			confidence: result.confidence,
+			reason: result.reason || null,
+		};
+
 		if (quotedPart) {
 			const quotedTweetId = readString(quotedPart.id);
 			const quotedAuthorName = readString(quotedPart.authorName);
+			const quotedCreatedAt = readString(quotedPart.createdAt);
 			const quotedSource = isRecord(item.tweet.quotedTweetFull)
 				? item.tweet.quotedTweetFull
 				: isRecord(item.tweet.quotedTweet)
@@ -927,26 +1049,38 @@ function buildClassificationScratchMarkdown(
 			);
 			const quotedKey = buildScratchQuotedKey(quotedTweetId, quotedText);
 
-			let quotedNode = quotedNodesByKey.get(quotedKey);
+			let quotedNode = referencedNodesByKey.get(quotedKey);
 			if (!quotedNode) {
 				quotedNode = {
-					indexId: `Q${nextQuotedIndex}`,
+					indexId: `R${nextReferencedIndex}`,
 					tweetId: quotedTweetId,
 					authorName: quotedAuthorName,
+					createdAt: quotedCreatedAt,
 					text: quotedText,
+					referenceIndexIds: [],
 					referencedBy: [],
 					sourceKinds: ["quoted"],
+					sourceRef: null,
+					category: null,
+					confidence: null,
+					reason: null,
 				};
-				nextQuotedIndex += 1;
-				quotedNodesByKey.set(quotedKey, quotedNode);
-				quotedNodesInOrder.push(quotedNode);
+				nextReferencedIndex += 1;
+				referencedNodesByKey.set(quotedKey, quotedNode);
+				referencedNodesInOrder.push(quotedNode);
 			}
 
-			pushUnique(referenceIndexIds, quotedNode.indexId);
+			pushUnique(mainNode.referenceIndexIds, quotedNode.indexId);
 			pushUnique(quotedNode.referencedBy, mainIndexId);
 			pushUnique(quotedNode.sourceKinds, "quoted");
 			if (!quotedNode.authorName && quotedAuthorName) {
 				quotedNode.authorName = quotedAuthorName;
+			}
+			if (!quotedNode.createdAt && quotedCreatedAt) {
+				quotedNode.createdAt = quotedCreatedAt;
+			}
+			if (quotedText.length > quotedNode.text.length) {
+				quotedNode.text = quotedText;
 			}
 		}
 
@@ -956,9 +1090,17 @@ function buildClassificationScratchMarkdown(
 				continue;
 			}
 
+			const mappingResolvedUrl = readString(mapping.resolvedUrl);
+			const mappingShortUrl = readString(mapping.shortUrl);
+			if (isTweetMediaPermalinkUrl(mappingResolvedUrl ?? mappingShortUrl)) {
+				// Media sub-links should not become standalone non-main timeline nodes.
+				continue;
+			}
+
 			const mappingTweetId = readString(mapping.tweetId);
 			const mappingTweetFull = isRecord(mapping.tweetFull) ? mapping.tweetFull : null;
 			const mappingAuthorName = extractAuthorName(mappingTweetFull);
+			const mappingCreatedAt = extractCreatedAt(mappingTweetFull);
 			const mappingShortLinkMappings = toScratchShortLinkMappings(mappingTweetFull?.shortLinkMappings);
 			const mappingText = rewriteShortLinksForScratch(
 				pickPayloadPrimaryText(mappingTweetFull),
@@ -973,43 +1115,72 @@ function buildClassificationScratchMarkdown(
 				mappingText || readString(mapping.resolvedUrl) || readString(mapping.shortUrl) || "(no text)";
 			const mappingKey = buildScratchQuotedKey(mappingTweetId, fallbackText);
 
-			let mappingNode = quotedNodesByKey.get(mappingKey);
+			let mappingNode = referencedNodesByKey.get(mappingKey);
 			if (!mappingNode) {
 				mappingNode = {
-					indexId: `Q${nextQuotedIndex}`,
+					indexId: `R${nextReferencedIndex}`,
 					tweetId: mappingTweetId,
 					authorName: mappingAuthorName,
+					createdAt: mappingCreatedAt,
 					text: fallbackText,
+					referenceIndexIds: [],
 					referencedBy: [],
 					sourceKinds: ["shortLink"],
+					sourceRef: null,
+					category: null,
+					confidence: null,
+					reason: null,
 				};
-				nextQuotedIndex += 1;
-				quotedNodesByKey.set(mappingKey, mappingNode);
-				quotedNodesInOrder.push(mappingNode);
+				nextReferencedIndex += 1;
+				referencedNodesByKey.set(mappingKey, mappingNode);
+				referencedNodesInOrder.push(mappingNode);
 			}
 
-			pushUnique(referenceIndexIds, mappingNode.indexId);
+			pushUnique(mainNode.referenceIndexIds, mappingNode.indexId);
 			pushUnique(mappingNode.referencedBy, mainIndexId);
 			pushUnique(mappingNode.sourceKinds, "shortLink");
 			if (!mappingNode.authorName && mappingAuthorName) {
 				mappingNode.authorName = mappingAuthorName;
 			}
+			if (!mappingNode.createdAt && mappingCreatedAt) {
+				mappingNode.createdAt = mappingCreatedAt;
+			}
+			if (fallbackText.length > mappingNode.text.length) {
+				mappingNode.text = fallbackText;
+			}
 		}
 
-		mainNodes.push({
-			indexId: mainIndexId,
-			tweetId: mainTweetId,
-			authorName: mainAuthorName,
-			text: mainText,
-			referenceIndexIds,
-			sourceRef: `${parse(item.archiveFile).base}:line=${item.lineNumber},tweetIndex=${item.tweetIndex}`,
-			category: result.category,
-			confidence: result.confidence,
-			reason: result.reason,
-		});
+		mainNodes.push(mainNode);
 	}
 
 	const droppedCount = items.length - keptCount;
+	const sortedNodes = [...referencedNodesInOrder, ...mainNodes].sort((a, b) => {
+		const byTime = compareCreatedAtAsc(a.createdAt, b.createdAt);
+		if (byTime !== 0) {
+			return byTime;
+		}
+
+		const aIsMain = a.sourceKinds.includes("main");
+		const bIsMain = b.sourceKinds.includes("main");
+		if (aIsMain !== bIsMain) {
+			return aIsMain ? 1 : -1;
+		}
+
+		return a.indexId.localeCompare(b.indexId);
+	});
+
+	const nodeIdRemap = new Map<string, string>();
+	for (let index = 0; index < sortedNodes.length; index += 1) {
+		const node = sortedNodes[index] as ScratchNode;
+		nodeIdRemap.set(node.indexId, `N${index + 1}`);
+	}
+
+	const remappedNodes = sortedNodes.map((node) => ({
+		...node,
+		indexId: nodeIdRemap.get(node.indexId) ?? node.indexId,
+		referenceIndexIds: sortIndexIds(node.referenceIndexIds.map((id) => nodeIdRemap.get(id) ?? id), "N"),
+		referencedBy: sortIndexIds(node.referencedBy.map((id) => nodeIdRemap.get(id) ?? id), "N"),
+	}));
 
 	const lines: string[] = [];
 	lines.push("# Digest Draft");
@@ -1020,41 +1191,26 @@ function buildClassificationScratchMarkdown(
 	lines.push(`- keptTweets: ${keptCount}`);
 	lines.push(`- droppedIrrelevant: ${droppedCount}`);
 	lines.push("");
-	lines.push("## Referenced Tweets (Before Referencing Tweets)");
+	lines.push("## Tweets (Chronological)");
 	lines.push("");
 
-	if (quotedNodesInOrder.length === 0) {
+	if (remappedNodes.length === 0) {
 		lines.push("- (none)");
 		lines.push("");
 	} else {
-		for (const quotedNode of quotedNodesInOrder) {
-			const refs = quotedNode.referencedBy.join(", ");
-			const sourceKinds = quotedNode.sourceKinds.join("+");
+		for (const node of remappedNodes) {
+			const refs = node.referenceIndexIds.join(", ");
+			const referencedBy = node.referencedBy.join(", ");
+			const sourceKinds = node.sourceKinds.join("+");
+			const confidence = typeof node.confidence === "number" ? node.confidence.toFixed(2) : "n/a";
 			lines.push(
-				`### [${quotedNode.indexId}] id=${quotedNode.tweetId ?? "n/a"} author=${quotedNode.authorName ?? "n/a"} source=${sourceKinds || "unknown"} referencedBy=${refs || "none"}`,
+				`### [${node.indexId}] id=${node.tweetId ?? "n/a"} author=${node.authorName ?? "n/a"} createdAt=${node.createdAt ?? "n/a"} source=${sourceKinds || "unknown"} category=${node.category ?? "n/a"} confidence=${confidence} reason=${node.reason ?? ""} refs=${refs || "none"} referencedBy=${referencedBy || "none"} sourceRef=${node.sourceRef ?? "n/a"}`,
 			);
 			lines.push("```text");
-			lines.push(quotedNode.text || "(no text)");
+			lines.push(node.text || "(no text)");
 			lines.push("```");
 			lines.push("");
 		}
-	}
-
-	lines.push("## Referencing Tweets (After Quoted Tweets)");
-	lines.push("");
-	if (mainNodes.length === 0) {
-		lines.push("- (none)");
-		lines.push("");
-	}
-	for (const mainNode of mainNodes) {
-		const refs = mainNode.referenceIndexIds.length > 0 ? mainNode.referenceIndexIds.join(",") : "none";
-		lines.push(
-			`### [${mainNode.indexId}] id=${mainNode.tweetId ?? "n/a"} author=${mainNode.authorName ?? "n/a"} category=${mainNode.category} confidence=${mainNode.confidence.toFixed(2)} reason=${mainNode.reason || ""} refs=${refs} source=${mainNode.sourceRef}`,
-		);
-		lines.push("```text");
-		lines.push(mainNode.text || "(no text)");
-		lines.push("```");
-		lines.push("");
 	}
 
 	return {
@@ -1244,33 +1400,62 @@ async function runDigestDraftTask(
 	digestConfig: ReturnType<typeof extractDigestConfig>,
 ): Promise<void> {
 	const todayDate = formatLocalDateStamp(new Date());
-	let dateStamp = parsed.date ?? todayDate;
-	if (!parsed.file && !parsed.date) {
-		const archiveDates = await listArchiveDates(twitterConfig.outputPath);
-		dateStamp = await pickArchiveDateWithUi(ctx, archiveDates, todayDate);
+	let dateSelector = parsed.date ?? todayDate;
+	let archiveDates: string[] = [];
+	if (!parsed.file) {
+		archiveDates = await listArchiveDates(twitterConfig.outputPath);
+		if (!parsed.date) {
+			dateSelector = await pickArchiveDateWithUi(ctx, archiveDates, todayDate);
+		}
 	}
-	const sourceFile = parsed.file
-		? expandAndResolvePath(parsed.file)
-		: buildDailyArchivePath(twitterConfig.outputPath, dateStamp);
 
-	let sourceRaw: string;
-	try {
-		sourceRaw = await readFile(sourceFile, "utf-8");
-	} catch (error) {
-		notify(
-			ctx,
-			`Unable to read archive file: ${sourceFile} (${error instanceof Error ? error.message : String(error)})`,
-			"error",
-		);
+	const sourceFiles = parsed.file
+		? [expandAndResolvePath(parsed.file)]
+		: dateSelector === DIGEST_DATE_ALL
+			? [...archiveDates]
+				.sort((a, b) => a.localeCompare(b))
+				.map((date) => buildDailyArchivePath(twitterConfig.outputPath, date))
+			: [buildDailyArchivePath(twitterConfig.outputPath, dateSelector)];
+
+	if (sourceFiles.length === 0) {
+		notify(ctx, "No digest archive files found for --date all.", "warning");
 		return;
 	}
 
-	const parsedItems = await parseJsonlItems(sourceRaw, {
-		archiveFile: sourceFile,
-		archiveOrder: 0,
-	});
+	const outputDateStamp =
+		parsed.date ?? (!parsed.file ? dateSelector : undefined) ?? extractDateStampFromPath(sourceFiles[0] ?? "") ?? todayDate;
+	const digestDraftPath = buildDigestDraftPath(outputDateStamp);
+	const digestDraftDebugPath = buildDigestDraftDebugPath(outputDateStamp);
+	const sourceLabel =
+		sourceFiles.length === 1
+			? (sourceFiles[0] as string)
+			: `${sourceFiles.length} files (${DIGEST_DATE_ALL} archives)`;
+
+	const parsedItems: ClassificationItem[] = [];
+	for (let archiveOrder = 0; archiveOrder < sourceFiles.length; archiveOrder += 1) {
+		const sourceFile = sourceFiles[archiveOrder] as string;
+		let sourceRaw: string;
+		try {
+			sourceRaw = await readFile(sourceFile, "utf-8");
+		} catch (error) {
+			const message = `Unable to read archive file: ${sourceFile} (${error instanceof Error ? error.message : String(error)})`;
+			if (sourceFiles.length === 1) {
+				notify(ctx, message, "error");
+				return;
+			}
+			notify(ctx, `${message}; skipped.`, "warning");
+			continue;
+		}
+
+		const batchItems = await parseJsonlItems(sourceRaw, {
+			archiveFile: sourceFile,
+			archiveOrder,
+		});
+		parsedItems.push(...batchItems);
+	}
+
 	if (parsedItems.length === 0) {
-		notify(ctx, `No tweets found in ${sourceFile}.`, "warning");
+		notify(ctx, `No tweets found in ${sourceLabel}.`, "warning");
 		return;
 	}
 
@@ -1320,7 +1505,7 @@ async function runDigestDraftTask(
 
 	notify(
 		ctx,
-		`Digest draft start: full ${items.length} tweets from ${sourceFile}, model=${provider}/${modelId}, concurrency=${concurrency}.`,
+		`Digest draft start: full ${items.length} tweets from ${sourceLabel}, model=${provider}/${modelId}, concurrency=${concurrency}.`,
 		"info",
 	);
 
@@ -1423,12 +1608,12 @@ async function runDigestDraftTask(
 
 	const elapsedMs = Date.now() - startedAt;
 	try {
-		const scratch = buildClassificationScratchMarkdown(items, results, sourceFile);
-		await mkdir(dirname(DIGEST_DRAFT_PATH), { recursive: true });
-		await writeFile(DIGEST_DRAFT_PATH, scratch.markdown, "utf-8");
+		const scratch = buildClassificationScratchMarkdown(items, results, sourceLabel);
+		await mkdir(dirname(digestDraftPath), { recursive: true });
+		await writeFile(digestDraftPath, scratch.markdown, "utf-8");
 		notify(
 			ctx,
-			`Digest draft updated: ${DIGEST_DRAFT_PATH} (kept=${scratch.keptCount}, droppedIrrelevant=${scratch.droppedCount})`,
+			`Digest draft updated: ${digestDraftPath} (kept=${scratch.keptCount}, droppedIrrelevant=${scratch.droppedCount})`,
 			"info",
 		);
 	} catch (error) {
@@ -1441,13 +1626,13 @@ async function runDigestDraftTask(
 
 	try {
 		const classifyMarkdown = buildClassificationResultMarkdown(items, results, {
-			sourceFile,
+			sourceFile: sourceLabel,
 			modelLabel: `${model.provider}/${model.id}`,
 			elapsedMs,
 		});
-		await mkdir(dirname(DIGEST_DRAFT_DEBUG_PATH), { recursive: true });
-		await writeFile(DIGEST_DRAFT_DEBUG_PATH, classifyMarkdown, "utf-8");
-		notify(ctx, `Digest draft debug written: ${DIGEST_DRAFT_DEBUG_PATH}`, "info");
+		await mkdir(dirname(digestDraftDebugPath), { recursive: true });
+		await writeFile(digestDraftDebugPath, classifyMarkdown, "utf-8");
+		notify(ctx, `Digest draft debug written: ${digestDraftDebugPath}`, "info");
 	} catch (error) {
 		notify(
 			ctx,
@@ -1480,8 +1665,12 @@ export function registerDigestCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			if (parsed.date && !isDateStamp(parsed.date)) {
-				notify(ctx as CommandContext, `Invalid --date: ${parsed.date}. Expected YYYY-MM-DD.`, "warning");
+			if (parsed.date && parsed.date !== DIGEST_DATE_ALL && !isDateStamp(parsed.date)) {
+				notify(
+					ctx as CommandContext,
+					`Invalid --date: ${parsed.date}. Expected YYYY-MM-DD or ${DIGEST_DATE_ALL}.`,
+					"warning",
+				);
 				return;
 			}
 

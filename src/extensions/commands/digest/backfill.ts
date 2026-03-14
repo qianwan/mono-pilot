@@ -383,6 +383,23 @@ function extractBestText(record: Record<string, unknown>): string | null {
 	]);
 }
 
+function extractAuthorName(record: Record<string, unknown>): string | null {
+	const author = isRecord(record.author) ? record.author : null;
+	if (!author) {
+		return null;
+	}
+
+	return firstNonEmptyString([readString(author.name), readString(author.screen_name)]);
+}
+
+function extractCreatedAt(record: Record<string, unknown>): string | null {
+	return firstNonEmptyString([
+		readString(record.createdAt),
+		readString(record.created_at),
+		readNestedString(record, ["legacy", "created_at"]),
+	]);
+}
+
 function extractBestMedia(record: Record<string, unknown>): unknown[] | null {
 	if (Array.isArray(record.media)) {
 		return record.media.map((item) => (isRecord(item) ? { ...item } : item));
@@ -499,6 +516,8 @@ async function fetchTweetById(
 		const text = extractBestText(payload);
 		const fullText = extractBestFullText(payload);
 		const media = extractBestMedia(payload);
+		const author = extractAuthorName(payload);
+		const createdAt = extractCreatedAt(payload);
 
 		if (text) {
 			normalized.text = text;
@@ -508,6 +527,14 @@ async function fetchTweetById(
 		}
 		if (media) {
 			normalized.media = media;
+		}
+
+		if (author) {
+			normalized.author = { name: author };
+		}
+
+		if (createdAt) {
+			normalized.createdAt = createdAt;
 		}
 
 		stats.tweetReadSuccess += 1;
@@ -679,6 +706,34 @@ async function enrichShortLinkMappings(
 				mapping.tweetFull = { ...fetched };
 				changed = true;
 				addedTweetFull += 1;
+			}
+		}
+
+		const mappingTweetFull = isRecord(mapping.tweetFull)
+			? mapping.tweetFull
+			: tweetId && tweetId === selfTweetId && tweetFull
+				? tweetFull
+				: null;
+
+		if (mappingTweetFull) {
+			const author = extractAuthorName(mappingTweetFull);
+			if (author !== (readString(mapping.author) ?? null)) {
+				if (author) {
+					mapping.author = author;
+				} else {
+					delete mapping.author;
+				}
+				changed = true;
+			}
+
+			const createdAt = extractCreatedAt(mappingTweetFull);
+			if (createdAt !== (readString(mapping.createdAt) ?? null)) {
+				if (createdAt) {
+					mapping.createdAt = createdAt;
+				} else {
+					delete mapping.createdAt;
+				}
+				changed = true;
 			}
 		}
 	}

@@ -490,6 +490,23 @@ function extractBestText(record: Record<string, unknown>): string | null {
 	]);
 }
 
+function extractAuthorName(record: Record<string, unknown>): string | null {
+	const author = isRecord(record.author) ? record.author : null;
+	if (!author) {
+		return null;
+	}
+
+	return firstNonEmptyString([readString(author.name), readString(author.screen_name)]);
+}
+
+function extractCreatedAt(record: Record<string, unknown>): string | null {
+	return firstNonEmptyString([
+		readString(record.createdAt),
+		readString(record.created_at),
+		readNestedString(record, ["legacy", "created_at"]),
+	]);
+}
+
 function extractBestMedia(record: Record<string, unknown>): unknown[] | null {
 	if (Array.isArray(record.media)) {
 		return record.media.map((item) => (isRecord(item) ? { ...item } : item));
@@ -867,28 +884,44 @@ class TwitterCollector implements TwitterCollectorHandle {
 				const tweetFullByShortLinkTweetId = new Map<string, Record<string, unknown> | null>();
 				const enrichedShortLinkMappings: Record<string, unknown>[] = [];
 
-				for (const mapping of shortLinkMappings) {
-					const enriched: Record<string, unknown> = {
-						shortUrl: mapping.shortUrl,
-						resolvedUrl: mapping.resolvedUrl,
-						tweetId: mapping.statusId,
-					};
+			for (const mapping of shortLinkMappings) {
+				const enriched: Record<string, unknown> = {
+					shortUrl: mapping.shortUrl,
+					resolvedUrl: mapping.resolvedUrl,
+					tweetId: mapping.statusId,
+				};
 
-					const statusId = mapping.statusId;
-					if (statusId && statusId !== mainId) {
-						let shortLinkTweetFull = tweetFullByShortLinkTweetId.get(statusId);
-						if (shortLinkTweetFull === undefined) {
-							shortLinkTweetFull = await this.loadTweetFull(statusId, "shortLinkTweetFull");
-							tweetFullByShortLinkTweetId.set(statusId, shortLinkTweetFull ?? null);
-						}
-
-						if (shortLinkTweetFull) {
-							enriched.tweetFull = { ...shortLinkTweetFull };
-						}
+				const statusId = mapping.statusId;
+				let mappingTweetFull: Record<string, unknown> | null = null;
+				if (statusId && statusId !== mainId) {
+					let shortLinkTweetFull = tweetFullByShortLinkTweetId.get(statusId);
+					if (shortLinkTweetFull === undefined) {
+						shortLinkTweetFull = await this.loadTweetFull(statusId, "shortLinkTweetFull");
+						tweetFullByShortLinkTweetId.set(statusId, shortLinkTweetFull ?? null);
 					}
 
-					enrichedShortLinkMappings.push(enriched);
+					if (shortLinkTweetFull) {
+						mappingTweetFull = shortLinkTweetFull;
+						enriched.tweetFull = { ...mappingTweetFull };
+					}
+				} else if (statusId && statusId === mainId && fullMain) {
+					mappingTweetFull = fullMain;
 				}
+
+				if (mappingTweetFull) {
+					const author = extractAuthorName(mappingTweetFull);
+					if (author) {
+						enriched.author = author;
+					}
+
+					const createdAt = extractCreatedAt(mappingTweetFull);
+					if (createdAt) {
+						enriched.createdAt = createdAt;
+					}
+				}
+
+				enrichedShortLinkMappings.push(enriched);
+			}
 
 				tweet.shortLinkMappings = enrichedShortLinkMappings;
 			}
@@ -1138,6 +1171,8 @@ class TwitterCollector implements TwitterCollectorHandle {
 		const text = extractBestText(payload);
 		const fullText = extractBestFullText(payload);
 		const media = extractBestMedia(payload);
+		const author = extractAuthorName(payload);
+		const createdAt = extractCreatedAt(payload);
 
 		if (text) {
 			normalized.text = text;
@@ -1149,6 +1184,14 @@ class TwitterCollector implements TwitterCollectorHandle {
 
 		if (media) {
 			normalized.media = media;
+		}
+
+		if (author) {
+			normalized.author = { name: author };
+		}
+
+		if (createdAt) {
+			normalized.createdAt = createdAt;
 		}
 
 		return normalized;
