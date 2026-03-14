@@ -3,15 +3,15 @@ import { closeSync, openSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
-import { extractTwitterCollectorConfig, type TwitterCollectorConfig } from "../../../config/twitter.js";
-import { loadMonoPilotConfigObject } from "../../../config/mono-pilot.js";
+import { extractTwitterCollectorConfig, type TwitterCollectorConfig } from "../../config/twitter.js";
+import { loadMonoPilotConfigObject } from "../../config/mono-pilot.js";
 import {
 	emitClusterV2TwitterCollectorStartupFailed,
 	emitClusterV2TwitterPullBatch,
 	emitClusterV2TwitterPullFailed,
-} from "../../events.js";
-import { logClusterEvent, type ClusterLogContext } from "../../observability.js";
-import type { ServiceDescriptor } from "../../rpc.js";
+} from "../events.js";
+import { logClusterEvent, type ClusterLogContext } from "../observability.js";
+import type { ServiceDescriptor } from "../rpc.js";
 
 interface BirdCommandResult {
 	code: number | null;
@@ -401,21 +401,6 @@ function extractTweetId(record: Record<string, unknown>): string | null {
 		readString(record.rest_id) ??
 		readNestedString(record, ["legacy", "id_str"])
 	);
-}
-
-function readStringArray(value: unknown): string[] {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-
-	const deduped = new Set<string>();
-	for (const item of value) {
-		const text = readString(item);
-		if (text) {
-			deduped.add(text);
-		}
-	}
-	return [...deduped];
 }
 
 function extractStatusIdFromUrl(url: string): string | null {
