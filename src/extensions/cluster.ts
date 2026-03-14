@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { BusHandle } from "../cluster/bus.js";
 import type { MessagePushPayload } from "../cluster/protocol.js";
 import { closeCluster, getActiveClusterService } from "../cluster/init.js";
+import { buildMemoryIndex, type BuildMode } from "../memory/build-memory.js";
 import { publishSystemEvent } from "./system-events.js";
 import {
 	closeClusterV2,
@@ -21,10 +22,13 @@ const USAGE = [
 	"  /cluster inbox                      — show received messages",
 	"  /cluster status                     — show runtime cluster status",
 	"  /cluster services                   — show cluster_v2 service registry",
+	"  /cluster sync-memory [--mode <mode>] — rebuild memory index (default: dirty)",
 	"  /cluster reelect                    — force this node to re-elect/rejoin",
 	"  /cluster stepdown                   — leader steps down and rejoins",
 	"  /cluster close                      — close local cluster subsystem",
 ].join("\n");
+
+const SYNC_MEMORY_USAGE = "Usage: /cluster sync-memory [--mode full|dirty] (default: dirty)";
 
 /** Mutable slot — set once the bus is connected in session_start. */
 const inbox: MessagePushPayload[] = [];
@@ -57,7 +61,7 @@ export function setClusterCommandDefaultChannel(channel: string | undefined): vo
 
 export function registerClusterCommands(pi: ExtensionAPI): void {
 	pi.registerCommand("cluster", {
-		description: "Cluster commands: send, broadcast, who, status, services, reelect, stepdown, close",
+		description: "Cluster commands: send, broadcast, who, status, services, sync-memory, reelect, stepdown, close",
 		handler: async (args, ctx) => {
 			const sub = parseSubcommand(args);
 
@@ -223,6 +227,40 @@ export function registerClusterCommands(pi: ExtensionAPI): void {
 					break;
 				}
 
+				case "sync-memory": {
+					const parsed = parseSyncMemoryArgs(sub.body ?? "");
+					if (parsed.error) {
+						notifyMemory(ctx, parsed.error, "warning");
+						break;
+					}
+
+					if (parsed.mode && !isValidBuildMode(parsed.mode)) {
+						notifyMemory(ctx, `Invalid --mode: ${parsed.mode}. ${SYNC_MEMORY_USAGE}`, "warning");
+						break;
+					}
+
+					const mode: BuildMode = isValidBuildMode(parsed.mode) ? parsed.mode : "dirty";
+					notifyMemory(ctx, `Building memory index (mode=${mode})...`, "info");
+
+					try {
+						const result = await buildMemoryIndex({
+							workspaceDir: ctx.cwd,
+							mode,
+						});
+
+						if (result.ok) {
+							notifyMemory(ctx, result.message, "info");
+						} else {
+							notifyMemory(ctx, result.message, "warning");
+						}
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						notifyMemory(ctx, `sync-memory failed: ${message}`, "error");
+					}
+
+					break;
+				}
+
 				case "reelect": {
 					const activeV2 = getActiveClusterV2Service();
 					if (!activeV2) {
@@ -321,6 +359,33 @@ interface Subcommand {
 	body?: string;
 }
 
+function parseSyncMemoryArgs(raw: string): { mode?: string; error?: string } {
+	const tokens = raw.trim().split(/\s+/);
+	let mode: string | undefined;
+
+	for (let i = 0; i < tokens.length; i += 1) {
+		const token = tokens[i];
+		if (!token) continue;
+
+		if (token === "--mode") {
+			mode = tokens[i + 1];
+			i += 1;
+			continue;
+		}
+		if (token.startsWith("--mode=")) {
+			mode = token.slice("--mode=".length);
+			continue;
+		}
+		return { error: `Unknown argument: ${token}. ${SYNC_MEMORY_USAGE}` };
+	}
+
+	return { mode };
+}
+
+function isValidBuildMode(value: string | undefined): value is BuildMode {
+	return value === "full" || value === "dirty";
+}
+
 function parseSubcommand(raw: string): Subcommand {
 	const trimmed = raw.trim();
 	if (!trimmed) return {};
@@ -362,6 +427,27 @@ function notify(
 			ctx,
 		});
 	}
+
+	if (ctx.hasUI && ctx.ui?.notify) {
+		ctx.ui.notify(message, level);
+	} else {
+		const prefix = level === "error" ? "[error]" : level === "warning" ? "[warn]" : "[info]";
+		console.log(`${prefix} ${message}`);
+	}
+}
+
+function notifyMemory(
+	ctx: { hasUI?: boolean; ui?: { notify?: (msg: string, level?: NotifyLevel) => void } },
+	message: string,
+	level: NotifyLevel,
+): void {
+	publishSystemEvent({
+		source: "memory",
+		level,
+		message,
+		toast: false,
+		ctx,
+	});
 
 	if (ctx.hasUI && ctx.ui?.notify) {
 		ctx.ui.notify(message, level);

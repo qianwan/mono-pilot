@@ -34,11 +34,10 @@ import memoryGetExtension from "../tools/memory-get.js";
 import busSendExtension, { setBusSendHandle } from "../tools/bus-send.js";
 import mailboxExtension from "../tools/mailbox.js";
 import { registerSessionMemoryHook } from "../memory/session/hook.js";
-import { registerBuildMemoryCommand } from "./commands/build-memory.js";
-import { registerDigestCommand } from "./commands/digest/index.js";
+import { registerDigestCommand } from "./digest/index.js";
 import { registerClusterCommands, setClusterHandle } from "./cluster.js";
 import { registerStatusCommand } from "./status.js";
-import { registerImageModelCommands } from "./commands/image-model.js";
+import { registerImageModelCommands } from "./image-model.js";
 import { registerSftpCommands } from "./sftp.js";
 import { registerSystemEvents } from "./system-events.js";
 import { initSubsystems, shutdownSubsystems, type SubsystemHandles } from "./lifecycle.js";
@@ -86,7 +85,6 @@ export default function monoPilotExtension(pi: ExtensionAPI) {
 
 	registerSessionMemoryHook(pi);
 	registerSystemEvents(pi);
-	registerBuildMemoryCommand(pi);
 	registerDigestCommand(pi);
 	registerClusterCommands(pi);
 	registerStatusCommand(pi);

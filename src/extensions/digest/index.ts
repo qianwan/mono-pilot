@@ -3,10 +3,10 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { extractDigestConfig } from "../../../config/digest.js";
-import { loadMonoPilotConfigObject } from "../../../config/mono-pilot.js";
-import { extractTwitterCollectorConfig } from "../../../config/twitter.js";
-import { publishSystemEvent } from "../../system-events.js";
+import { extractDigestConfig } from "../../config/digest.js";
+import { loadMonoPilotConfigObject } from "../../config/mono-pilot.js";
+import { extractTwitterCollectorConfig } from "../../config/twitter.js";
+import { publishSystemEvent } from "../system-events.js";
 import { runDigestBackfill } from "./backfill.js";
 
 type NotifyLevel = "info" | "warning" | "error";

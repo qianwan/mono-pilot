@@ -3,7 +3,7 @@ import { closeSync, openSync } from "node:fs";
 import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
-import type { TwitterCollectorConfig } from "../../../config/twitter.js";
+import type { TwitterCollectorConfig } from "../../config/twitter.js";
 
 type NotifyLevel = "info" | "warning" | "error";
 

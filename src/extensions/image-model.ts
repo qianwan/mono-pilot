@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
-import { loadMonoPilotConfigObject, saveMonoPilotConfigObject } from "../../config/mono-pilot.js";
-import { applyImageGenSelection, extractImageGenConfig, type ImageGenProviderConfig } from "../../config/image-gen.js";
+import { loadMonoPilotConfigObject, saveMonoPilotConfigObject } from "../config/mono-pilot.js";
+import { applyImageGenSelection, extractImageGenConfig, type ImageGenProviderConfig } from "../config/image-gen.js";
 
 type NotifyLevel = "info" | "warning" | "error";
 
