@@ -14,7 +14,7 @@ import { emitClusterV2LeaderOffline, emitClusterV2LeaderRecovered } from "./even
 import { createEmbeddingClient, createEmbeddingHandlers } from "./services/embedding.js";
 import { connectBusClient, createBusService, type BusHandle } from "./services/bus.js";
 import { maybeStartDiscordCollector, type DiscordCollectorHandle } from "./services/discord/index.js";
-import { maybeStartTwitterCollector, type TwitterCollectorHandle } from "./services/twitter/index.js";
+import { maybeStartTwitterCollector, type TwitterCollectorHandle } from "./services/x-reader.js";
 import { FollowerRegistryCache } from "./services/registry-cache.js";
 import { ServiceRegistry } from "./services/registry.js";
 

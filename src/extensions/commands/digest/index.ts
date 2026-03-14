@@ -77,7 +77,7 @@ const CATEGORIES = [
 const CATEGORY_SET = new Set<string>(CATEGORIES);
 const FOCUS_CATEGORY_SET = new Set<string>(CATEGORIES.filter((category) => category !== IRRELEVANT_CATEGORY));
 const DEFAULT_DEBUG_SAMPLE_SIZE = 4;
-const CLASSIFICATION_TEXT_MAX_CHARS = 1024;
+const CLASSIFICATION_TEXT_MAX_CHARS = 512;
 const DIGEST_OUTPUT_DIR = join(homedir(), ".mono-pilot", "twitter");
 const ENABLE_CLASSIFICATION_BRANCH = true;
 const DIGEST_DATE_ALL = "all";
@@ -290,6 +290,10 @@ function extractDateStampFromPath(filePath: string): string | undefined {
 
 function buildDigestDraftPath(dateStamp: string): string {
 	return join(DIGEST_OUTPUT_DIR, `draft.${dateStamp}.md`);
+}
+
+function buildDigestDraftJsonlPath(dateStamp: string): string {
+	return join(DIGEST_OUTPUT_DIR, `draft.${dateStamp}.jsonl`);
 }
 
 function buildDigestDraftDebugPath(dateStamp: string): string {
@@ -983,11 +987,105 @@ function pushUnique(items: string[], value: string): void {
 	}
 }
 
+function mergeScratchNodeInPlace(target: ScratchNode, incoming: ScratchNode): void {
+	for (const sourceKind of incoming.sourceKinds) {
+		pushUnique(target.sourceKinds, sourceKind);
+	}
+
+	for (const ref of incoming.referenceIndexIds) {
+		pushUnique(target.referenceIndexIds, ref);
+	}
+
+	for (const referencedBy of incoming.referencedBy) {
+		pushUnique(target.referencedBy, referencedBy);
+	}
+
+	if (!target.authorName && incoming.authorName) {
+		target.authorName = incoming.authorName;
+	}
+
+	if (!target.createdAt && incoming.createdAt) {
+		target.createdAt = incoming.createdAt;
+	}
+
+	if (incoming.text.length > target.text.length) {
+		target.text = incoming.text;
+	}
+
+	if (!target.sourceRef && incoming.sourceRef) {
+		target.sourceRef = incoming.sourceRef;
+	}
+
+	if (!target.category && incoming.category) {
+		target.category = incoming.category;
+		target.confidence = incoming.confidence;
+		target.reason = incoming.reason;
+	}
+}
+
+function mergeScratchNodesByTweetId(nodes: ScratchNode[]): ScratchNode[] {
+	const merged: ScratchNode[] = [];
+	const byTweetId = new Map<string, ScratchNode>();
+	const oldToCanonicalId = new Map<string, string>();
+
+	for (const node of nodes) {
+		const tweetId = node.tweetId;
+		if (!tweetId) {
+			merged.push({
+				...node,
+				sourceKinds: [...node.sourceKinds],
+				referenceIndexIds: [...node.referenceIndexIds],
+				referencedBy: [...node.referencedBy],
+			});
+			oldToCanonicalId.set(node.indexId, node.indexId);
+			continue;
+		}
+
+		const existing = byTweetId.get(tweetId);
+		if (!existing) {
+			const cloned = {
+				...node,
+				sourceKinds: [...node.sourceKinds],
+				referenceIndexIds: [...node.referenceIndexIds],
+				referencedBy: [...node.referencedBy],
+			};
+			merged.push(cloned);
+			byTweetId.set(tweetId, cloned);
+			oldToCanonicalId.set(node.indexId, cloned.indexId);
+			continue;
+		}
+
+		mergeScratchNodeInPlace(existing, node);
+		oldToCanonicalId.set(node.indexId, existing.indexId);
+	}
+
+	for (const node of merged) {
+		const normalizedRefs = node.referenceIndexIds
+			.map((id) => oldToCanonicalId.get(id) ?? id)
+			.filter((id, idx, arr) => arr.indexOf(id) === idx)
+			.filter((id) => id !== node.indexId);
+		node.referenceIndexIds = normalizedRefs;
+
+		const normalizedReferencedBy = node.referencedBy
+			.map((id) => oldToCanonicalId.get(id) ?? id)
+			.filter((id, idx, arr) => arr.indexOf(id) === idx)
+			.filter((id) => id !== node.indexId);
+		node.referencedBy = normalizedReferencedBy;
+	}
+
+	return merged;
+}
+
 function buildClassificationScratchMarkdown(
 	items: ClassificationItem[],
 	results: ClassificationResult[],
 	sourceFile: string,
-): { markdown: string; keptCount: number; droppedCount: number } {
+): {
+	markdown: string;
+	jsonlLines: string[];
+	keptCount: number;
+	droppedCount: number;
+} {
 	const referencedNodesByKey = new Map<string, ScratchNode>();
 	const referencedNodesInOrder: ScratchNode[] = [];
 	const mainNodes: ScratchNode[] = [];
@@ -1154,7 +1252,8 @@ function buildClassificationScratchMarkdown(
 	}
 
 	const droppedCount = items.length - keptCount;
-	const sortedNodes = [...referencedNodesInOrder, ...mainNodes].sort((a, b) => {
+	const mergedNodes = mergeScratchNodesByTweetId([...referencedNodesInOrder, ...mainNodes]);
+	const sortedNodes = mergedNodes.sort((a, b) => {
 		const byTime = compareCreatedAtAsc(a.createdAt, b.createdAt);
 		if (byTime !== 0) {
 			return byTime;
@@ -1178,9 +1277,36 @@ function buildClassificationScratchMarkdown(
 	const remappedNodes = sortedNodes.map((node) => ({
 		...node,
 		indexId: nodeIdRemap.get(node.indexId) ?? node.indexId,
-		referenceIndexIds: sortIndexIds(node.referenceIndexIds.map((id) => nodeIdRemap.get(id) ?? id), "N"),
-		referencedBy: sortIndexIds(node.referencedBy.map((id) => nodeIdRemap.get(id) ?? id), "N"),
+		referenceIndexIds: sortIndexIds(
+			node.referenceIndexIds
+				.map((id) => nodeIdRemap.get(id) ?? id)
+				.filter((id) => id !== (nodeIdRemap.get(node.indexId) ?? node.indexId)),
+			"N",
+		),
+		referencedBy: sortIndexIds(
+			node.referencedBy
+				.map((id) => nodeIdRemap.get(id) ?? id)
+				.filter((id) => id !== (nodeIdRemap.get(node.indexId) ?? node.indexId)),
+			"N",
+		),
 	}));
+
+	const jsonlLines = remappedNodes.map((node) =>
+		JSON.stringify({
+			indexId: node.indexId,
+			tweetId: node.tweetId,
+			authorName: node.authorName,
+			createdAt: node.createdAt,
+			sourceKinds: node.sourceKinds,
+			category: node.category,
+			confidence: node.confidence,
+			reason: node.reason,
+			refs: node.referenceIndexIds,
+			referencedBy: node.referencedBy,
+			sourceRef: node.sourceRef,
+			text: node.text,
+		}),
+	);
 
 	const lines: string[] = [];
 	lines.push("# Digest Draft");
@@ -1215,6 +1341,7 @@ function buildClassificationScratchMarkdown(
 
 	return {
 		markdown: lines.join("\n"),
+		jsonlLines,
 		keptCount,
 		droppedCount,
 	};
@@ -1393,6 +1520,28 @@ function notify(ctx: CommandContext, message: string, level: NotifyLevel): void 
 	console.log(`${prefix} ${message}`);
 }
 
+function notifyModelCallErrorToast(
+	ctx: CommandContext,
+	provider: string,
+	modelId: string,
+	errorMessage: string,
+): void {
+	const normalized = errorMessage.trim() || "unknown error";
+	publishSystemEvent({
+		source: "digest",
+		level: "error",
+		message: `Draft model call failed (${provider}/${modelId}): ${normalized}`,
+		dedupeKey: `digest|draft_model_call_failed|${provider}/${modelId}|${normalized.slice(0, 120)}`,
+		// Keep error card overlay only; avoid duplicated ui.notify text line.
+		toast: false,
+		ctx,
+	});
+}
+
+function isProviderCallErrorMessage(message: AssistantMessage): boolean {
+	return message.stopReason === "error" || Boolean(message.errorMessage?.trim());
+}
+
 async function runDigestDraftTask(
 	parsed: ParsedArgs,
 	ctx: CommandContext,
@@ -1425,6 +1574,7 @@ async function runDigestDraftTask(
 	const outputDateStamp =
 		parsed.date ?? (!parsed.file ? dateSelector : undefined) ?? extractDateStampFromPath(sourceFiles[0] ?? "") ?? todayDate;
 	const digestDraftPath = buildDigestDraftPath(outputDateStamp);
+	const digestDraftJsonlPath = buildDigestDraftJsonlPath(outputDateStamp);
 	const digestDraftDebugPath = buildDigestDraftDebugPath(outputDateStamp);
 	const sourceLabel =
 		sourceFiles.length === 1
@@ -1581,6 +1731,18 @@ async function runDigestDraftTask(
 					} satisfies ClassificationResult;
 				}
 
+				if (isProviderCallErrorMessage(assistant) || isProviderCallErrorMessage(fallbackAssistant)) {
+					notifyModelCallErrorToast(
+						ctx,
+						model.provider,
+						model.id,
+						`main=${summarizeAssistantFailure(assistant, rawText)}; fallback=${summarizeAssistantFailure(
+							fallbackAssistant,
+							fallbackRawText,
+						)}`,
+					);
+				}
+
 				return toIrrelevantResult(
 					item,
 					classifiedAt,
@@ -1588,6 +1750,12 @@ async function runDigestDraftTask(
 					`invalid classifier output (${summarizeAssistantFailure(assistant, rawText)}; fallback=${summarizeAssistantFailure(fallbackAssistant, fallbackRawText)})`,
 				);
 			} catch (error) {
+				notifyModelCallErrorToast(
+					ctx,
+					model.provider,
+					model.id,
+					error instanceof Error ? error.message : String(error),
+				);
 				return toIrrelevantResult(
 					item,
 					classifiedAt,
@@ -1607,9 +1775,10 @@ async function runDigestDraftTask(
 	);
 
 	const elapsedMs = Date.now() - startedAt;
+	const scratch = buildClassificationScratchMarkdown(items, results, sourceLabel);
+	await mkdir(dirname(digestDraftPath), { recursive: true });
+
 	try {
-		const scratch = buildClassificationScratchMarkdown(items, results, sourceLabel);
-		await mkdir(dirname(digestDraftPath), { recursive: true });
 		await writeFile(digestDraftPath, scratch.markdown, "utf-8");
 		notify(
 			ctx,
@@ -1620,6 +1789,18 @@ async function runDigestDraftTask(
 		notify(
 			ctx,
 			`Digest draft write failed: ${error instanceof Error ? error.message : String(error)}`,
+			"warning",
+		);
+	}
+
+	try {
+		const jsonlRaw = scratch.jsonlLines.join("\n");
+		await writeFile(digestDraftJsonlPath, jsonlRaw ? `${jsonlRaw}\n` : "", "utf-8");
+		notify(ctx, `Digest draft JSONL written: ${digestDraftJsonlPath} (rows=${scratch.jsonlLines.length})`, "info");
+	} catch (error) {
+		notify(
+			ctx,
+			`Digest draft JSONL write failed: ${error instanceof Error ? error.message : String(error)}`,
 			"warning",
 		);
 	}
